@@ -1,0 +1,16 @@
+name: "Manual build test"
+
+on:
+  workflow_dispatch:
+
+jobs:
+  release:
+    runs-on: macos-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Run composite release action
+        uses: ./.github/actions/release
+        with:
+          goreleaser_token: ""
+          goreleaser_args: "release --snapshot --skip publish --clean"

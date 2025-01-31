@@ -1,0 +1,53 @@
+version: 2
+
+before:
+  hooks:
+    - rustup default stable
+    - cargo install --locked cargo-zigbuild
+
+builds:
+  - id: "cal2prompt"
+    builder: rust
+    binary: cal2prompt
+    targets:
+      - x86_64-apple-darwin
+      - aarch64-apple-darwin
+      - x86_64-unknown-linux-gnu
+    tool: "cargo"
+    command: zigbuild
+    flags:
+      - --release
+    skip: false
+
+archives:
+  - formats: ["tar.gz"]
+    name_template: "{{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
+
+checksum:
+  name_template: "checksums.txt"
+
+changelog:
+  sort: asc
+  filters:
+    exclude:
+      - "^docs:"
+      - "^test:"
+
+brews:
+  - repository:
+      owner: shuntaka9576
+      name: homebrew-tap
+      token: "{{ .Env.GH_PAT }}"
+    commit_author:
+      name: goreleaserbot
+      email: bot@goreleaser.com
+    directory: Formula
+    license: MIT
+    name: cal2prompt
+    url_template: "https://github.com/shuntaka9576/cal2prompt/releases/download/{{ .Tag }}/{{ .ArtifactName }}"
+    homepage: "https://shuntaka.dev/"
+    description: "✨ Fetches your schedule (e.g., from Google Calendar) and converts it into a single LLM prompt. It can also run as an MCP (Model Context Protocol) server."
+    test: |
+      system "#{bin}/cal2prompt --help"
+    install: |
+      bin.install "cal2prompt"

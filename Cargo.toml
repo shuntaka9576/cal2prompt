@@ -1,0 +1,31 @@
+[package]
+name = "cal2prompt"
+version = "0.1.0"
+edition = "2021"
+
+[[bin]]
+name = "cal2prompt"
+path = "src/main.rs"
+
+[dependencies]
+clap = { version = "4.5.26", features = ["derive"] }
+serde = { version = "1.0.217", features = ["derive"] }
+serde_json = "1.0.137"
+anyhow = "1.0.75"
+mlua = { version = "0.9", features = ["vendored", "lua54", "async", "send"] }
+thiserror = "2.0.11"
+futures = "0.3.31"
+tokio = { version = "1.37.0", features = ["full"] }
+reqwest = { version = "0.12.12", features = ["json"] }
+chrono = "0.4.39"
+chrono-tz = "0.10.1"
+oauth2 = { version = "5.0.0" }
+webbrowser = "1.0.3"
+dirs = "6.0.0"
+minijinja = "2.6.0"
+async-trait = "0.1.85"
+openssl = { version = "0.10", features = ["vendored"] }
+
+[dev-dependencies]
+tempfile = "3.15.0"
+mockall = "0.13.1"

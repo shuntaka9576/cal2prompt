@@ -1,0 +1,27 @@
+name: tagpr
+
+on:
+  push:
+    branches:
+    - "main"
+  workflow_dispatch:
+
+jobs:
+  tagpr:
+    runs-on: macos-latest
+    permissions:
+      contents: write
+      pull-requests: write
+    steps:
+    - name: checkout
+      uses: actions/checkout@v4
+    - name: tagpr
+      id: tagpr
+      uses: Songmu/tagpr@v1
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+    - uses: ./.github/actions/release
+      if: "steps.tagpr.outputs.tag != ''"
+      with:
+        goreleaser_token: ${{ secrets.GORELEASER_TOKEN }}
+        goreleaser_args: "release --clean"

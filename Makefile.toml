@@ -1,0 +1,57 @@
+[config]
+default_to_workspace = false
+
+[tasks.set-env-local.env]
+CAL2_PROMPT_CONFIG_FILE_PATH = "${CARGO_MAKE_WORKING_DIRECTORY}/.config/config.lua"
+
+[tasks.run]
+extend = "set-env-local"
+command = "cargo"
+args = ["run", "${@}"]
+
+[tasks.build]
+extend = "set-env-local"
+command = "cargo"
+args = ["build", "${@}"]
+
+[tasks.check]
+extend = "set-env-local"
+command = "cargo"
+args = ["check"]
+
+[tasks.watch]
+extend = "set-env-local"
+run_task = [{ name = ["fmt", "clippy", "test"] }]
+watch = true
+
+[tasks.fmt]
+extend = "set-env-local"
+command = "cargo"
+args = ["fmt", "--all", "${@}"]
+
+[tasks.clippy]
+extend = "set-env-local"
+command = "cargo"
+args = ["clippy", "--all", "--all-targets", "${@}"]
+
+[tasks.test]
+extend = "set-env-local"
+install_crate = { crate_name = "cargo-nextest", binary = "cargo", test_arg = [
+  "nextest",
+  "--help",
+] }
+command = "cargo"
+args = [
+  "nextest",
+  "run",
+  "--workspace",
+  "--status-level",
+  "all",
+  "--test-threads=1",
+]
+
+[tasks.clippy-ci]
+run_task = "clippy"
+
+[tasks.test-ci]
+run_task = "test"

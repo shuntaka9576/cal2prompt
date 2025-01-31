@@ -1,0 +1,30 @@
+name: release
+
+on:
+  push:
+    tags:
+    - "v[0-9]+.[0-9]+.[0-9]+"
+
+inputs:
+  goreleaser_token:
+    description: goreleaser token
+    required: true
+  goreleaser_args:
+    description: "goreleaser args"
+    required: true
+
+runs:
+  using: composite
+  steps:
+  - name: "Setup zig"
+    uses: mlugg/setup-zig@v1
+  - uses: rui314/setup-mold@v1
+  - name: "Release"
+    uses: goreleaser/goreleaser-action@v6
+    with:
+      distribution: goreleaser
+      version: "~> v2"
+      args: ${{ inputs.goreleaser_args }}
+    env:
+      GH_PAT: ${{ inputs.goreleaser_token }}
+      GITHUB_TOKEN: ${{ github.token }}
