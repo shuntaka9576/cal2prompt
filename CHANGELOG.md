@@ -4,5 +4,3 @@
 - perf(tls): replace openssl with rustls-tls to improve build times by @shuntaka9576 in https://github.com/shuntaka9576/cal2prompt/pull/2
 
 ## [v0.1.0](https://github.com/shuntaka9576/cal2prompt/commits/v0.1.0) - 2025-01-31
-
-## [v0.1.0](https://github.com/shuntaka9576/cal2prompt/commits/v0.1.0) - 2025-01-31
