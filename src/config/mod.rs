@@ -43,6 +43,7 @@ pub struct GoogleOAuth2 {
     pub client_id: String,
     pub client_secret: String,
     pub redirect_url: String,
+    pub scopes: Vec<String>,
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -170,6 +171,15 @@ fn load_config(config_file_path: &Path) -> anyhow::Result<Config> {
                 )
             })?;
 
+        let default_scopes_table = lua.create_table()?;
+        default_scopes_table.push("https://www.googleapis.com/auth/calendar.events")?;
+
+        let google_oauth2_scopes: Vec<String> = google_oauth2_tbl
+            .get::<_, Option<Table>>("scopes")?
+            .unwrap_or(default_scopes_table)
+            .sequence_values()
+            .collect::<Result<_, _>>()?;
+
         let google_calendar_tbl: Table = google_tbl.get("calendar")?;
         let google_get_events_tbl: Table = google_calendar_tbl.get("getEvents")?;
         let calendar_ids_table: Table = google_get_events_tbl.get("calendarIDs")?;
@@ -224,6 +234,7 @@ fn load_config(config_file_path: &Path) -> anyhow::Result<Config> {
                         client_id: google_oauth2_client_id,
                         client_secret: google_oauth2_client_secret,
                         redirect_url,
+                        scopes: google_oauth2_scopes,
                     },
                     calendar: GoogleCalendar {
                         get_events: GoogleCalendarGetEvents { calendar_ids },
@@ -308,6 +319,7 @@ return M
                         client_id: "test_client_id".to_string(),
                         client_secret: "test_client_secret".to_string(),
                         redirect_url: "http://127.0.0.1:9004".to_string(),
+                        scopes: vec!["https://www.googleapis.com/auth/calendar.events".to_string()],
                     },
                     calendar: GoogleCalendar {
                         get_events: GoogleCalendarGetEvents { calendar_ids },

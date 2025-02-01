@@ -219,6 +219,7 @@ Please add the following configuration to `~/Library/Application\ Support/Claude
 |`settings.oauthFilePath`|false|Path where OAuth2.0 tokens are temporarily stored. Typically, users do not need to change this unless they have a custom setup.|`~/.local/share/cal2prompt/oauth`|
 |`source.google.oauth2.clientID`|true|Your Google OAuth2 Client ID used for authenticating with the Google Calendar API.|*(No default; must be specified)*|
 |`source.google.oauth2.clientSecret`|true|Your Google OAuth2 Client Secret used for authenticating with the Google Calendar API.|*(No default; must be specified)*|
+|`source.google.oauth2.scopes`|false|Scopes to grant to Google OAuth 2.0 client. Please refer to [here](https://developers.google.com/calendar/api/auth) for the types of scopes.|[`https://www.googleapis.com/auth/calendar.events`]|
 |`source.google.oauth2.redirectURL`|false|The OAuth2 callback URL to which Google will send responses.|`"http://127.0.0.1:9004"`|
 |`source.google.calendar.getEvents.calendarIDs`|true|A list of one or more Google Calendar IDs from which cal2prompt will fetch events. Each ID can typically be found in your Google Calendar settings. If multiple IDs are provided, events from each calendar will be fetched and combined in chronological order.|*(No default; must be specified)*|
 |`output.template`|true|A string that defines how the fetched calendar data should be formatted/output.|*(No default; must be specified)*|

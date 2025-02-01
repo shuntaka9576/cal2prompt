@@ -94,9 +94,9 @@ impl OAuth2Client {
         let (authorize_url, _csrf_state) = self
             .client
             .authorize_url(CsrfToken::new_random)
-            .add_scope(Scope::new(
-                "https://www.googleapis.com/auth/calendar.readonly".to_string(),
-            ))
+            .add_scopes(vec![Scope::new(
+                "https://www.googleapis.com/auth/calendar.events".to_string(),
+            )])
             .set_pkce_challenge(pkce_code_challenge)
             .url();
 

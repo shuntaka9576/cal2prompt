@@ -1,7 +1,7 @@
 use reqwest::Client;
 use thiserror::Error;
 
-use super::model::CalendarEventsResponse;
+use super::model::{CalendarEventsResponse, CreatedEventResponse, InsertEventRequest};
 
 #[derive(Error, Debug)]
 pub enum GoogleCalendarError {
@@ -50,5 +50,28 @@ impl GoogleCalendarClient {
         let calendar_events_response = response.json::<CalendarEventsResponse>().await?;
 
         Ok(calendar_events_response)
+    }
+
+    pub async fn create_calendar_event(
+        &self,
+        calendar_id: &str,
+        new_event: &InsertEventRequest,
+    ) -> anyhow::Result<CreatedEventResponse> {
+        let url = format!(
+            "https://www.googleapis.com/calendar/v3/calendars/{}/events",
+            calendar_id
+        );
+
+        let response = self
+            .client
+            .post(&url)
+            .bearer_auth(&self.access_token)
+            .json(new_event)
+            .send()
+            .await?
+            .error_for_status()?;
+
+        let created_event = response.json::<CreatedEventResponse>().await?;
+        Ok(created_event)
     }
 }
