@@ -2,7 +2,7 @@
   "tools": [
     {
       "name": "list-calendar-events",
-      "description": "Retrieves events from Google Calendar within the specified time range. The time range is specified in JST (example). Format: yyyy-MM-dd or yyyy-MM-dd HH:mm. (Currently we only parse yyyy-MM-dd).",
+      "description": "Retrieves events from Google Calendar within the specified time range. Format: yyyy-MM-dd or yyyy-MM-dd HH:mm. (Currently we only parse yyyy-MM-dd).",
       "inputSchema": {
         "type": "object",
         "properties": {
