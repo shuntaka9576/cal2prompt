@@ -1,5 +1,8 @@
 # Changelog
 
+## [v0.1.2](https://github.com/shuntaka9576/cal2prompt/compare/v0.1.1...v0.1.2) - 2025-02-02
+- fix(mcp): modifying JSON content returned in tools/list by @shuntaka9576 in https://github.com/shuntaka9576/cal2prompt/pull/5
+
 ## [v0.1.1](https://github.com/shuntaka9576/cal2prompt/compare/v0.1.0...v0.1.1) - 2025-02-01
 - perf(tls): replace openssl with rustls-tls to improve build times by @shuntaka9576 in https://github.com/shuntaka9576/cal2prompt/pull/2
 
