@@ -154,7 +154,7 @@ impl Cal2Prompt {
                                 if let Some(tool_name) =
                                     params_val.get("name").and_then(Value::as_str)
                                 {
-                                    if tool_name == "list-calendar-events" {
+                                    if tool_name == "list_calendar_events" {
                                         let since_str = params_val
                                             .pointer("/arguments/since")
                                             .and_then(Value::as_str)
