@@ -253,7 +253,7 @@ pub struct AttendeeEmail {
 }
 
 #[allow(dead_code)]
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Serialize)]
 pub struct CreatedEventResponse {
     pub id: String,
     pub summary: Option<String>,
@@ -263,7 +263,7 @@ pub struct CreatedEventResponse {
 }
 
 #[allow(dead_code)]
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Serialize)]
 pub struct EventDateTimeResponse {
     pub date: Option<String>,
     pub date_time: Option<String>,

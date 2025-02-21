@@ -223,6 +223,7 @@ Please add the following configuration to `~/Library/Application\ Support/Claude
 |`source.google.oauth2.redirectURL`|false|The OAuth2 callback URL to which Google will send responses.|`"http://127.0.0.1:9004"`|
 |`source.google.calendar.getEvents.calendarIDs`|true|A list of one or more Google Calendar IDs from which cal2prompt will fetch events. Each ID can typically be found in your Google Calendar settings. If multiple IDs are provided, events from each calendar will be fetched and combined in chronological order.|*(No default; must be specified)*|
 |`output.template`|true|A string that defines how the fetched calendar data should be formatted/output.|*(No default; must be specified)*|
+|`experimental.mcp.insertCalendarEvent.calendarID`|false|The ID of the Google Calendar to which new events will be inserted when using the experimental MCP feature.|None
 
 ## Environment
 
