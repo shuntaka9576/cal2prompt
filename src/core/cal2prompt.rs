@@ -2,11 +2,13 @@ use crate::config::{self, Config};
 use crate::core::event::{EventDurationCalculator, RealClock};
 use crate::core::template::generate;
 use crate::google::calendar::client::GoogleCalendarClient;
-use crate::google::calendar::model::EventItem;
+use crate::google::calendar::model::{
+    CreatedEventResponse, EventDateTime, EventItem, InsertEventRequest,
+};
 use crate::google::oauth::{OAuth2Client, Token};
 use crate::mcp::stdio::{Message, StdioTransport, Transport};
 use crate::shared::utils::date::{intersection_days, to_utc_start_of_start_rfc3339};
-use chrono::{DateTime, Days, NaiveDate, TimeZone};
+use chrono::{DateTime, Days, NaiveDate, NaiveDateTime, TimeZone};
 use chrono_tz::Tz;
 use futures::future;
 use futures::StreamExt;
@@ -187,6 +189,61 @@ impl Cal2Prompt {
 
                                             transport.send(response).await?;
                                         }
+                                    } else if tool_name == "insert_calendar_event" {
+                                        let summary_str = params_val
+                                            .pointer("/arguments/summary")
+                                            .and_then(Value::as_str)
+                                            .unwrap_or("");
+                                        let description_str: Option<String> = params_val
+                                            .pointer("/arguments/description")
+                                            .and_then(Value::as_str)
+                                            .map(String::from);
+                                        let start_str = params_val
+                                            .pointer("/arguments/start")
+                                            .and_then(Value::as_str)
+                                            .unwrap_or("");
+                                        let end_str = params_val
+                                            .pointer("/arguments/end")
+                                            .and_then(Value::as_str)
+                                            .unwrap_or("");
+
+                                        match self
+                                            .insert_event(
+                                                summary_str,
+                                                description_str,
+                                                start_str,
+                                                end_str,
+                                            )
+                                            .await
+                                        {
+                                            Ok(res) => {
+                                                let obj_as_str = serde_json::to_string(&res)?;
+                                                let response = Message::Response {
+                                                    jsonrpc: "2.0".to_string(),
+                                                    id,
+                                                    result: Some(json!({
+                                                        "content": [{
+                                                            "type": "text",
+                                                            "text": obj_as_str,
+                                                        }],
+                                                    })),
+                                                    error: None,
+                                                };
+                                                transport.send(response).await?;
+                                            }
+                                            Err(err) => {
+                                                let response = Message::Response {
+                                                    jsonrpc: "2.0".to_string(),
+                                                    id,
+                                                    result: None,
+                                                    error: Some(json!({
+                                                        "code": 500,
+                                                        "message": format!("{}", err),
+                                                    })),
+                                                };
+                                                transport.send(response).await?;
+                                            }
+                                        }
                                     }
                                 }
                             }
@@ -215,6 +272,70 @@ impl Cal2Prompt {
         }
 
         Ok(())
+    }
+
+    pub async fn insert_event(
+        &self,
+        summary: &str,
+        description: Option<String>,
+        start: &str,
+        end: &str,
+    ) -> anyhow::Result<CreatedEventResponse> {
+        let tz: Tz =
+            self.config.settings.tz.parse().unwrap_or_else(|_| {
+                panic!("Invalid time zone string '{}'", self.config.settings.tz)
+            });
+
+        let start_naive_date = NaiveDateTime::parse_from_str(start, "%Y-%m-%d %H:%M")?;
+        let end_naive_date = NaiveDateTime::parse_from_str(end, "%Y-%m-%d %H:%M")?;
+
+        let start_with_tz = tz.from_local_datetime(&start_naive_date).unwrap();
+        let end_with_tz = tz.from_local_datetime(&end_naive_date).unwrap();
+
+        let start_rfc3339 = start_with_tz.to_rfc3339();
+        let end_rfc3339 = end_with_tz.to_rfc3339();
+
+        let calendar_client = GoogleCalendarClient::new(
+            self.token
+                .as_ref()
+                .expect("token not set")
+                .access_token
+                .clone(),
+        );
+
+        let Some(calendar_id) = &self
+            .config
+            .experimental
+            .mcp
+            .insert_calendar_event
+            .calendar_id
+        else {
+            return Err(anyhow::anyhow!("No calendar_id configured. Please specify experimental.mcp.insertCalendarEvent.calendarID in your config."));
+        };
+
+        let res = calendar_client
+            .create_calendar_event(
+                calendar_id,
+                &InsertEventRequest {
+                    summary: summary.to_string(),
+                    start: EventDateTime {
+                        date_time: Some(start_rfc3339),
+                        time_zone: Some("Asia/Tokyo".to_string()),
+                        date: None,
+                    },
+                    end: EventDateTime {
+                        date_time: Some(end_rfc3339),
+                        time_zone: Some("Asia/Tokyo".to_string()),
+                        date: None,
+                    },
+                    location: None,
+                    description,
+                    attendees: None, // TODO: add attendees
+                },
+            )
+            .await?;
+
+        Ok(res)
     }
 
     pub async fn fetch_days(&self, since: &str, until: &str) -> anyhow::Result<Vec<Day>> {

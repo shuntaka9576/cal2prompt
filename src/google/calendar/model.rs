@@ -191,7 +191,7 @@ pub struct Reminders {
 }
 
 #[allow(dead_code)]
-#[derive(Deserialize, Debug, Clone)]
+#[derive(Deserialize, Debug, Clone, Serialize)]
 pub struct EventDateTime {
     #[serde(rename = "dateTime")]
     pub date_time: Option<String>,
@@ -232,4 +232,39 @@ impl EventItem {
         }
         None
     }
+}
+
+#[derive(Debug, Serialize)]
+pub struct InsertEventRequest {
+    pub summary: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
+    pub start: EventDateTime,
+    pub end: EventDateTime,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub location: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub attendees: Option<Vec<AttendeeEmail>>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct AttendeeEmail {
+    pub email: String,
+}
+
+#[allow(dead_code)]
+#[derive(Debug, Deserialize, Serialize)]
+pub struct CreatedEventResponse {
+    pub id: String,
+    pub summary: Option<String>,
+    pub html_link: Option<String>,
+    pub start: Option<EventDateTimeResponse>,
+    pub end: Option<EventDateTimeResponse>,
+}
+
+#[allow(dead_code)]
+#[derive(Debug, Deserialize, Serialize)]
+pub struct EventDateTimeResponse {
+    pub date: Option<String>,
+    pub date_time: Option<String>,
 }

@@ -42,7 +42,7 @@ pub enum Message {
         #[serde(skip_serializing_if = "Option::is_none")]
         result: Option<serde_json::Value>,
         #[serde(skip_serializing_if = "Option::is_none")]
-        error: Option<String>,
+        error: Option<serde_json::Value>,
     },
 }
 
