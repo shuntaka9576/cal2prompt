@@ -76,7 +76,7 @@ async fn main() {
         std::process::exit(0);
     }
 
-    let cal2prompt = match init_cal2prompt().await {
+    let mut cal2prompt = match init_cal2prompt().await {
         Ok(cal2prompt) => cal2prompt,
         Err(e) => {
             eprintln!("{}", e);
@@ -127,7 +127,6 @@ async fn init_cal2prompt() -> anyhow::Result<Cal2Prompt> {
     let mut cal2prompt = Cal2Prompt::new()?;
     let _ = cal2prompt.oauth().await.map_err(|e| {
         eprintln!("{}", e);
-
         std::process::exit(1);
     });
 
