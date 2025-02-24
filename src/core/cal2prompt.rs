@@ -20,6 +20,22 @@ use std::path::Path;
 
 static TOOLS_JSON: &str = include_str!("./mcp/tools.json");
 
+#[derive(Debug)]
+#[allow(dead_code)]
+pub enum JsonRpcErrorCode {
+    ParseError = -32700,
+    InvalidRequest = -32600,
+    MethodNotFound = -32601,
+    InvalidParams = -32602,
+    InternalError = -32603,
+}
+
+#[derive(Debug, thiserror::Error)]
+pub enum CalendarError {
+    #[error("No calendar_id configured. Please specify experimental.mcp.insertCalendarEvent.calendarID in your config.")]
+    NoCalendarId,
+}
+
 pub struct Cal2Prompt {
     config: Config,
     token: Option<Token>,
@@ -100,7 +116,30 @@ impl Cal2Prompt {
         Ok(())
     }
 
-    pub async fn launch_mcp(&self) -> anyhow::Result<()> {
+    async fn ensure_valid_token(&mut self) -> anyhow::Result<()> {
+        if let Some(token) = &self.token {
+            if token.is_expired() {
+                let oauth2_client = OAuth2Client::new(
+                    &self.config.source.google.oauth2.client_id,
+                    &self.config.source.google.oauth2.client_secret,
+                    &self.config.source.google.oauth2.redirect_url,
+                );
+
+                if let Some(ref refresh_token) = token.refresh_token {
+                    let refreshed = oauth2_client.refresh_token(refresh_token.clone()).await?;
+                    self.save_token(&refreshed).await?;
+                    self.token = Some(refreshed);
+                } else {
+                    let new_token = oauth2_client.oauth_flow().await?;
+                    self.save_token(&new_token).await?;
+                    self.token = Some(new_token);
+                }
+            }
+        }
+        Ok(())
+    }
+
+    pub async fn launch_mcp(&mut self) -> anyhow::Result<()> {
         let (transport, _sender) = StdioTransport::new();
         let mut stream = transport.receive();
 
@@ -115,6 +154,20 @@ impl Cal2Prompt {
                         "[SERVER] Got Request: id={}, method={}, params={:?}",
                         id, method, params
                     );
+
+                    if let Err(err) = self.ensure_valid_token().await {
+                        let response = Message::Response {
+                            jsonrpc: "2.0".to_string(),
+                            id,
+                            result: None,
+                            error: Some(json!({
+                                "code": JsonRpcErrorCode::InternalError as i32,
+                                "message": format!("Failed to refresh token: {}", err),
+                            })),
+                        };
+                        transport.send(response).await?;
+                        continue;
+                    }
 
                     match &*method {
                         "initialize" => {
@@ -179,10 +232,10 @@ impl Cal2Prompt {
                                                 jsonrpc: "2.0".to_string(),
                                                 id,
                                                 result: Some(json!({
-                                                  "content": [{
-                                                     "type": "text",
-                                                     "text": obj_as_str,
-                                                  }],
+                                                    "content": [{
+                                                        "type": "text",
+                                                        "text": obj_as_str,
+                                                    }],
                                                 })),
                                                 error: None,
                                             };
@@ -232,13 +285,25 @@ impl Cal2Prompt {
                                                 transport.send(response).await?;
                                             }
                                             Err(err) => {
+                                                let (code, message) =
+                                                    match err.downcast_ref::<CalendarError>() {
+                                                        Some(CalendarError::NoCalendarId) => (
+                                                            JsonRpcErrorCode::InvalidParams as i32,
+                                                            err.to_string(),
+                                                        ),
+                                                        None => (
+                                                            JsonRpcErrorCode::InternalError as i32,
+                                                            format!("Unexpected error: {}", err),
+                                                        ),
+                                                    };
+
                                                 let response = Message::Response {
                                                     jsonrpc: "2.0".to_string(),
                                                     id,
                                                     result: None,
                                                     error: Some(json!({
-                                                        "code": 500,
-                                                        "message": format!("{}", err),
+                                                        "code": code,
+                                                        "message": message,
                                                     })),
                                                 };
                                                 transport.send(response).await?;
@@ -310,7 +375,7 @@ impl Cal2Prompt {
             .insert_calendar_event
             .calendar_id
         else {
-            return Err(anyhow::anyhow!("No calendar_id configured. Please specify experimental.mcp.insertCalendarEvent.calendarID in your config."));
+            return Err(CalendarError::NoCalendarId.into());
         };
 
         let res = calendar_client
