@@ -1,4 +1,5 @@
-use crate::core::cal2prompt::{Cal2Prompt, CalendarError, JsonRpcErrorCode};
+use crate::core::cal2prompt::{Cal2Prompt, JsonRpcErrorCode};
+use crate::google::calendar::service::CalendarServiceError;
 use crate::mcp::stdio::{Message, StdioTransport, Transport};
 use futures::StreamExt;
 use serde_json::{json, Value};
@@ -226,8 +227,8 @@ impl<'a> McpHandler<'a> {
                 self.send_text_response(transport, id, &obj_as_str).await?;
             }
             Err(err) => {
-                let (code, message) = match err.downcast_ref::<CalendarError>() {
-                    Some(CalendarError::NoCalendarId) => {
+                let (code, message) = match err.downcast_ref::<CalendarServiceError>() {
+                    Some(CalendarServiceError::NoCalendarId) => {
                         (JsonRpcErrorCode::InvalidParams, err.to_string())
                     }
                     None => (

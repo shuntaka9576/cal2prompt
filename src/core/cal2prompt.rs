@@ -1,11 +1,11 @@
 use crate::config::{self, Config};
 use crate::core::event::{EventDurationCalculator, RealClock};
 use crate::core::template::generate;
-use crate::google::calendar::model::{EventItem, CreatedEventResponse};
+use crate::google::calendar::model::{CreatedEventResponse, EventItem};
 use crate::google::calendar::service::GoogleCalendarService;
 use crate::google::oauth::{OAuth2Client, Token};
-use crate::mcp::stdio::StdioTransport;
 use crate::mcp::handler::McpHandler;
+use crate::mcp::stdio::StdioTransport;
 use crate::shared::utils::date::intersection_days;
 use chrono::{DateTime, NaiveDate, TimeZone};
 use chrono_tz::Tz;
@@ -22,12 +22,6 @@ pub enum JsonRpcErrorCode {
     MethodNotFound = -32601,
     InvalidParams = -32602,
     InternalError = -32603,
-}
-
-#[derive(Debug, thiserror::Error)]
-pub enum CalendarError {
-    #[error("No calendar_id configured. Please specify experimental.mcp.insertCalendarEvent.calendarID in your config.")]
-    NoCalendarId,
 }
 
 pub struct Cal2Prompt {
@@ -155,7 +149,9 @@ impl Cal2Prompt {
                 .clone(),
         );
 
-        calendar_service.create_calendar_event(summary, description, start, end).await
+        calendar_service
+            .create_calendar_event(summary, description, start, end)
+            .await
     }
 
     pub async fn fetch_days(&self, since: &str, until: &str) -> anyhow::Result<Vec<Day>> {
