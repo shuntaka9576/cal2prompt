@@ -1,24 +1,18 @@
 use crate::config::{self, Config};
 use crate::core::event::{EventDurationCalculator, RealClock};
 use crate::core::template::generate;
-use crate::google::calendar::client::GoogleCalendarClient;
-use crate::google::calendar::model::{
-    CreatedEventResponse, EventDateTime, EventItem, InsertEventRequest,
-};
+use crate::google::calendar::model::{EventItem, CreatedEventResponse};
+use crate::google::calendar::service::GoogleCalendarService;
 use crate::google::oauth::{OAuth2Client, Token};
-use crate::mcp::stdio::{Message, StdioTransport, Transport};
-use crate::shared::utils::date::{intersection_days, to_utc_start_of_start_rfc3339};
-use chrono::{DateTime, Days, NaiveDate, NaiveDateTime, TimeZone};
+use crate::mcp::stdio::StdioTransport;
+use crate::mcp::handler::McpHandler;
+use crate::shared::utils::date::intersection_days;
+use chrono::{DateTime, NaiveDate, TimeZone};
 use chrono_tz::Tz;
-use futures::future;
-use futures::StreamExt;
 use serde::Serialize;
-use serde_json::{json, Value};
 use std::collections::BTreeMap;
 use std::fs;
 use std::path::Path;
-
-static TOOLS_JSON: &str = include_str!("./mcp/tools.json");
 
 #[derive(Debug)]
 #[allow(dead_code)]
@@ -116,7 +110,7 @@ impl Cal2Prompt {
         Ok(())
     }
 
-    async fn ensure_valid_token(&mut self) -> anyhow::Result<()> {
+    pub async fn ensure_valid_token(&mut self) -> anyhow::Result<()> {
         if let Some(token) = &self.token {
             if token.is_expired() {
                 let oauth2_client = OAuth2Client::new(
@@ -141,273 +135,8 @@ impl Cal2Prompt {
 
     pub async fn launch_mcp(&mut self) -> anyhow::Result<()> {
         let (transport, _sender) = StdioTransport::new();
-        let mut stream = transport.receive();
-
-        eprintln!("MCP stdio transport server started. Waiting for JSON messages on stdin...");
-
-        while let Some(msg_result) = stream.next().await {
-            match msg_result {
-                Ok(Message::Request {
-                    id, method, params, ..
-                }) => {
-                    eprintln!(
-                        "[SERVER] Got Request: id={}, method={}, params={:?}",
-                        id, method, params
-                    );
-
-                    if let Err(err) = self.ensure_valid_token().await {
-                        self.send_error_response(
-                            &transport,
-                            id,
-                            JsonRpcErrorCode::InternalError,
-                            format!("Failed to refresh token: {}", err),
-                        )
-                        .await?;
-                        continue;
-                    }
-
-                    if let Err(err) = self.handle_request(&transport, id, method, params).await {
-                        eprintln!("[SERVER] Error handling request: {:?}", err);
-                        self.send_error_response(
-                            &transport,
-                            id,
-                            JsonRpcErrorCode::InternalError,
-                            format!("Failed to handle request: {}", err),
-                        )
-                        .await?;
-                    }
-                }
-                Ok(Message::Notification { method, params, .. }) => {
-                    eprintln!(
-                        "[SERVER] Got Notification: method={}, params={:?}",
-                        method, params
-                    );
-                }
-                Ok(Message::Response {
-                    id, result, error, ..
-                }) => {
-                    eprintln!(
-                        "[SERVER] Got Response: id={}, result={:?}, error={:?}",
-                        id, result, error
-                    );
-                }
-                Err(e) => {
-                    eprintln!("[SERVER] Error receiving message: {:?}", e);
-                }
-            }
-        }
-
-        Ok(())
-    }
-
-    async fn handle_request(
-        &self,
-        transport: &StdioTransport,
-        id: u64,
-        method: String,
-        params: Option<serde_json::Value>,
-    ) -> anyhow::Result<()> {
-        match &*method {
-            "initialize" => self.handle_initialize(transport, id).await?,
-            "tools/list" => self.handle_tools_list(transport, id).await?,
-            "tools/call" => {
-                if let Some(params_val) = params {
-                    self.handle_tools_call(transport, id, params_val).await?;
-                }
-            }
-            _ => {}
-        }
-        Ok(())
-    }
-
-    async fn handle_initialize(&self, transport: &StdioTransport, id: u64) -> anyhow::Result<()> {
-        let response = Message::Response {
-            jsonrpc: "2.0".to_string(),
-            id,
-            result: Some(json!({
-                "capabilities": {
-                    "experimental": {},
-                    "prompts": { "listChanged": false },
-                    "resources": { "listChanged": false, "subscribe": false },
-                    "tools": { "listChanged": false }
-                },
-                "protocolVersion": "2024-11-05",
-                "serverInfo": {
-                    "name": "cal2prompt",
-                    "version": "0.1.0"
-                }
-            })),
-            error: None,
-        };
-        transport.send(response).await?;
-        Ok(())
-    }
-
-    async fn handle_tools_list(&self, transport: &StdioTransport, id: u64) -> anyhow::Result<()> {
-        let tools_value: serde_json::Value =
-            serde_json::from_str(TOOLS_JSON).expect("tools.json must be valid JSON");
-
-        let response = Message::Response {
-            jsonrpc: "2.0".to_string(),
-            id,
-            result: Some(tools_value),
-            error: None,
-        };
-
-        transport.send(response).await?;
-        Ok(())
-    }
-
-    async fn handle_tools_call(
-        &self,
-        transport: &StdioTransport,
-        id: u64,
-        params_val: serde_json::Value,
-    ) -> anyhow::Result<()> {
-        let tool_name = match params_val.get("name").and_then(Value::as_str) {
-            Some(name) => name,
-            None => return Ok(()),
-        };
-
-        match tool_name {
-            "list_calendar_events" => {
-                self.handle_list_calendar_events(transport, id, &params_val)
-                    .await?
-            }
-            "insert_calendar_event" => {
-                self.handle_insert_calendar_event(transport, id, &params_val)
-                    .await?
-            }
-            _ => {}
-        }
-
-        Ok(())
-    }
-
-    async fn handle_list_calendar_events(
-        &self,
-        transport: &StdioTransport,
-        id: u64,
-        params_val: &serde_json::Value,
-    ) -> anyhow::Result<()> {
-        let since_str = params_val
-            .pointer("/arguments/since")
-            .and_then(Value::as_str)
-            .unwrap_or("");
-        let until_str = params_val
-            .pointer("/arguments/until")
-            .and_then(Value::as_str)
-            .unwrap_or("");
-
-        match self.fetch_days(since_str, until_str).await {
-            Ok(days) => {
-                let result_json = json!({ "days": days });
-                let obj_as_str = serde_json::to_string(&result_json)?;
-                self.send_text_response(transport, id, &obj_as_str).await?;
-            }
-            Err(err) => {
-                self.send_error_response(
-                    transport,
-                    id,
-                    JsonRpcErrorCode::InternalError,
-                    format!("Failed to fetch calendar events: {}", err),
-                )
-                .await?;
-            }
-        }
-
-        Ok(())
-    }
-
-    async fn handle_insert_calendar_event(
-        &self,
-        transport: &StdioTransport,
-        id: u64,
-        params_val: &serde_json::Value,
-    ) -> anyhow::Result<()> {
-        let summary_str = params_val
-            .pointer("/arguments/summary")
-            .and_then(Value::as_str)
-            .unwrap_or("");
-        let description_str: Option<String> = params_val
-            .pointer("/arguments/description")
-            .and_then(Value::as_str)
-            .map(String::from);
-        let start_str = params_val
-            .pointer("/arguments/start")
-            .and_then(Value::as_str)
-            .unwrap_or("");
-        let end_str = params_val
-            .pointer("/arguments/end")
-            .and_then(Value::as_str)
-            .unwrap_or("");
-
-        match self
-            .insert_event(summary_str, description_str, start_str, end_str)
-            .await
-        {
-            Ok(res) => {
-                let obj_as_str = serde_json::to_string(&res)?;
-                self.send_text_response(transport, id, &obj_as_str).await?;
-            }
-            Err(err) => {
-                let (code, message) = match err.downcast_ref::<CalendarError>() {
-                    Some(CalendarError::NoCalendarId) => {
-                        (JsonRpcErrorCode::InvalidParams, err.to_string())
-                    }
-                    None => (
-                        JsonRpcErrorCode::InternalError,
-                        format!("Unexpected error: {}", err),
-                    ),
-                };
-
-                self.send_error_response(transport, id, code, message)
-                    .await?;
-            }
-        }
-
-        Ok(())
-    }
-
-    async fn send_text_response(
-        &self,
-        transport: &StdioTransport,
-        id: u64,
-        text: &str,
-    ) -> anyhow::Result<()> {
-        let response = Message::Response {
-            jsonrpc: "2.0".to_string(),
-            id,
-            result: Some(json!({
-                "content": [{
-                    "type": "text",
-                    "text": text,
-                }],
-            })),
-            error: None,
-        };
-        transport.send(response).await?;
-        Ok(())
-    }
-
-    async fn send_error_response(
-        &self,
-        transport: &StdioTransport,
-        id: u64,
-        code: JsonRpcErrorCode,
-        message: String,
-    ) -> anyhow::Result<()> {
-        let response = Message::Response {
-            jsonrpc: "2.0".to_string(),
-            id,
-            result: None,
-            error: Some(json!({
-                "code": code as i32,
-                "message": message,
-            })),
-        };
-        transport.send(response).await?;
-        Ok(())
+        let mut handler = McpHandler::new(self);
+        handler.launch_mcp(&transport).await
     }
 
     pub async fn insert_event(
@@ -417,21 +146,8 @@ impl Cal2Prompt {
         start: &str,
         end: &str,
     ) -> anyhow::Result<CreatedEventResponse> {
-        let tz: Tz =
-            self.config.settings.tz.parse().unwrap_or_else(|_| {
-                panic!("Invalid time zone string '{}'", self.config.settings.tz)
-            });
-
-        let start_naive_date = NaiveDateTime::parse_from_str(start, "%Y-%m-%d %H:%M")?;
-        let end_naive_date = NaiveDateTime::parse_from_str(end, "%Y-%m-%d %H:%M")?;
-
-        let start_with_tz = tz.from_local_datetime(&start_naive_date).unwrap();
-        let end_with_tz = tz.from_local_datetime(&end_naive_date).unwrap();
-
-        let start_rfc3339 = start_with_tz.to_rfc3339();
-        let end_rfc3339 = end_with_tz.to_rfc3339();
-
-        let calendar_client = GoogleCalendarClient::new(
+        let calendar_service = GoogleCalendarService::new(
+            self.config.clone(),
             self.token
                 .as_ref()
                 .expect("token not set")
@@ -439,39 +155,7 @@ impl Cal2Prompt {
                 .clone(),
         );
 
-        let Some(calendar_id) = &self
-            .config
-            .experimental
-            .mcp
-            .insert_calendar_event
-            .calendar_id
-        else {
-            return Err(CalendarError::NoCalendarId.into());
-        };
-
-        let res = calendar_client
-            .create_calendar_event(
-                calendar_id,
-                &InsertEventRequest {
-                    summary: summary.to_string(),
-                    start: EventDateTime {
-                        date_time: Some(start_rfc3339),
-                        time_zone: Some("Asia/Tokyo".to_string()),
-                        date: None,
-                    },
-                    end: EventDateTime {
-                        date_time: Some(end_rfc3339),
-                        time_zone: Some("Asia/Tokyo".to_string()),
-                        date: None,
-                    },
-                    location: None,
-                    description,
-                    attendees: None, // TODO: add attendees
-                },
-            )
-            .await?;
-
-        Ok(res)
+        calendar_service.create_calendar_event(summary, description, start, end).await
     }
 
     pub async fn fetch_days(&self, since: &str, until: &str) -> anyhow::Result<Vec<Day>> {
@@ -489,11 +173,8 @@ impl Cal2Prompt {
         let since_with_tz = tz.from_local_datetime(&since_naive_date).unwrap();
         let until_with_tz = tz.from_local_datetime(&until_naive_date).unwrap();
 
-        let until_plus_one = until_with_tz.checked_add_days(Days::new(1)).unwrap();
-        let since_rfc3339 = to_utc_start_of_start_rfc3339(since_with_tz);
-        let until_rfc3339 = to_utc_start_of_start_rfc3339(until_plus_one);
-
-        let calendar_client = GoogleCalendarClient::new(
+        let calendar_service = GoogleCalendarService::new(
+            self.config.clone(),
             self.token
                 .as_ref()
                 .expect("token not set")
@@ -501,29 +182,7 @@ impl Cal2Prompt {
                 .clone(),
         );
 
-        let mut fetch_futures = Vec::new();
-        for calendar_id in &self.config.source.google.calendar.get_events.calendar_ids {
-            let fut =
-                calendar_client.fetch_calendar_events(calendar_id, &since_rfc3339, &until_rfc3339);
-            fetch_futures.push(fut);
-        }
-
-        let results = future::join_all(fetch_futures).await;
-
-        let mut all_events: Vec<EventItem> = Vec::new();
-        for (i, result) in results.into_iter().enumerate() {
-            match result {
-                Ok(mut res) => {
-                    all_events.append(&mut res.items);
-                }
-                Err(e) => {
-                    eprintln!(
-                        "Error fetching events from calendar_id={}: {}",
-                        &self.config.source.google.calendar.get_events.calendar_ids[i], e
-                    );
-                }
-            }
-        }
+        let all_events = calendar_service.get_calendar_events(since, until).await?;
 
         Ok(Self::group_events_into_days(
             all_events,

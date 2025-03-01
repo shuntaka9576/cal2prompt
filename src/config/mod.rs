@@ -9,7 +9,7 @@ use std::{
     path::{Path, PathBuf},
 };
 
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Debug, PartialEq, Eq, Clone)]
 pub struct Config {
     pub source: Source,
     pub output: Output,
@@ -17,29 +17,29 @@ pub struct Config {
     pub experimental: Experimental,
 }
 
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Debug, PartialEq, Eq, Clone)]
 pub struct Settings {
     pub tz: String,
     pub oauth_file_path: String,
 }
 
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Debug, PartialEq, Eq, Clone)]
 pub struct Source {
     pub google: GoogleSource,
 }
 
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Debug, PartialEq, Eq, Clone)]
 pub struct Output {
     pub template: String,
 }
 
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Debug, PartialEq, Eq, Clone)]
 pub struct GoogleSource {
     pub oauth2: GoogleOAuth2,
     pub calendar: GoogleCalendar,
 }
 
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Debug, PartialEq, Eq, Clone)]
 pub struct GoogleOAuth2 {
     pub client_id: String,
     pub client_secret: String,
@@ -47,27 +47,27 @@ pub struct GoogleOAuth2 {
     pub scopes: Vec<String>,
 }
 
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Debug, PartialEq, Eq, Clone)]
 pub struct GoogleCalendar {
     pub get_events: GoogleCalendarGetEvents,
 }
 
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Debug, PartialEq, Eq, Clone)]
 pub struct GoogleCalendarGetEvents {
     pub calendar_ids: Vec<String>,
 }
 
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Debug, PartialEq, Eq, Clone)]
 pub struct Experimental {
     pub mcp: Mcp,
 }
 
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Debug, PartialEq, Eq, Clone)]
 pub struct Mcp {
     pub insert_calendar_event: InsertCalendarEvent,
 }
 
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Debug, PartialEq, Eq, Clone)]
 pub struct InsertCalendarEvent {
     pub calendar_id: Option<String>,
 }
