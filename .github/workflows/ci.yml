@@ -1,0 +1,117 @@
+name: Rust CI
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '**/*.rs'
+      - '**/Cargo.toml'
+      - '**/Cargo.lock'
+      - '.github/workflows/ci.yml'
+      - 'Makefile.toml'
+
+  pull_request:
+    paths:
+      - '**/*.rs'
+      - '**/Cargo.toml'
+      - '**/Cargo.lock'
+      - '.github/workflows/ci.yml'
+      - 'Makefile.toml'
+
+env:
+  CARGO_TERM_COLOR: always
+  RUSTFLAGS: "-D warnings"
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  check:
+    name: Check
+    strategy:
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Install Rust toolchain
+        uses: actions-rust-lang/setup-rust-toolchain@v1
+        with:
+          components: rustfmt, clippy
+          cache-shared-key: setup-rust-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('**/Cargo.lock') }}
+
+      - name: Install mold linker (Linux only)
+        if: runner.os == 'Linux'
+        uses: rui314/setup-mold@v1
+        with:
+          mold-version: 2.4.0
+
+      - name: Install cargo-make
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-make
+
+      - name: Check format
+        run: cargo fmt --all -- --check
+
+      - name: Run clippy
+        run: cargo make clippy-ci
+
+      - name: Build
+        run: cargo build
+
+  test:
+    name: Test
+    strategy:
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    permissions:
+      contents: write
+      pull-requests: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Install Rust toolchain
+        uses: actions-rust-lang/setup-rust-toolchain@v1
+        with:
+          components: llvm-tools-preview
+          cache-shared-key: setup-rust-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('**/Cargo.lock') }}
+
+      - name: Install mold linker (Linux only)
+        if: runner.os == 'Linux'
+        uses: rui314/setup-mold@v1
+        with:
+          mold-version: 2.4.0
+
+      - name: Install tools
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-make, cargo-llvm-cov, cargo-nextest
+
+      - name: Run tests
+        run: cargo make test-ci
+
+      - name: Generate coverage
+        if: runner.os == 'Linux'
+        run: cargo make coverage-ci-run
+
+      - name: Upload coverage to Codecov
+        if: runner.os == 'Linux'
+        uses: codecov/codecov-action@v4
+        with:
+          file: ./lcov.info
+          fail_ci_if_error: true
+          token: ${{ secrets.CODECOV_TOKEN }}
+
+      - name: Upload coverage to Octocov (alternative)
+        if: runner.os == 'Linux'
+        uses: k1LoW/octocov-action@v1
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
