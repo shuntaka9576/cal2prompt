@@ -1,0 +1,40 @@
+{
+  "$schema": "https://docs.renovatebot.com/renovate-schema.json",
+  "extends": [
+    "config:base"
+  ],
+  "schedule": ["every month"],
+  "packageRules": [
+    {
+      "matchUpdateTypes": ["minor", "patch"],
+      "groupName": "all non-major dependencies",
+      "groupSlug": "all-minor-patch"
+    },
+    {
+      "matchDepTypes": ["dev-dependencies"],
+      "groupName": "all dev dependencies",
+      "schedule": ["every 3 months"]
+    },
+    {
+      "matchManagers": ["github-actions"],
+      "groupName": "all GitHub Actions",
+      "schedule": ["every month"]
+    }
+  ],
+  "prHourlyLimit": 1,
+  "prConcurrentLimit": 3,
+  "automerge": true,
+  "automergeType": "pr",
+  "major": {
+    "automerge": false
+  },
+  "vulnerabilityAlerts": {
+    "enabled": true,
+    "labels": ["security"]
+  },
+  "labels": ["dependencies"],
+  "lockFileMaintenance": {
+    "enabled": true,
+    "schedule": ["every month"]
+  }
+}

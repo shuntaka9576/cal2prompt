@@ -4,7 +4,9 @@ use futures::future;
 
 use crate::config::Config;
 use crate::google::calendar::client::GoogleCalendarClient;
-use crate::google::calendar::model::{CreatedEventResponse, EventDateTime, EventItem, InsertEventRequest};
+use crate::google::calendar::model::{
+    CreatedEventResponse, EventDateTime, EventItem, InsertEventRequest,
+};
 use crate::shared::utils::date::to_utc_start_of_start_rfc3339;
 
 #[derive(Debug, thiserror::Error)]
@@ -34,9 +36,10 @@ impl GoogleCalendarService {
         start: &str,
         end: &str,
     ) -> anyhow::Result<CreatedEventResponse> {
-        let tz: Tz = self.config.settings.tz.parse().unwrap_or_else(|_| {
-            panic!("Invalid time zone string '{}'", self.config.settings.tz)
-        });
+        let tz: Tz =
+            self.config.settings.tz.parse().unwrap_or_else(|_| {
+                panic!("Invalid time zone string '{}'", self.config.settings.tz)
+            });
 
         let start_naive_date = NaiveDateTime::parse_from_str(start, "%Y-%m-%d %H:%M")?;
         let end_naive_date = NaiveDateTime::parse_from_str(end, "%Y-%m-%d %H:%M")?;
@@ -57,7 +60,8 @@ impl GoogleCalendarService {
             return Err(CalendarServiceError::NoCalendarId.into());
         };
 
-        let res = self.calendar_client
+        let res = self
+            .calendar_client
             .create_calendar_event(
                 calendar_id,
                 &InsertEventRequest {
@@ -82,10 +86,15 @@ impl GoogleCalendarService {
         Ok(res)
     }
 
-    pub async fn get_calendar_events(&self, since: &str, until: &str) -> anyhow::Result<Vec<EventItem>> {
-        let tz: Tz = self.config.settings.tz.parse().unwrap_or_else(|_| {
-            panic!("Invalid time zone string '{}'", self.config.settings.tz)
-        });
+    pub async fn get_calendar_events(
+        &self,
+        since: &str,
+        until: &str,
+    ) -> anyhow::Result<Vec<EventItem>> {
+        let tz: Tz =
+            self.config.settings.tz.parse().unwrap_or_else(|_| {
+                panic!("Invalid time zone string '{}'", self.config.settings.tz)
+            });
 
         let since_naive_date = NaiveDate::parse_from_str(since, "%Y-%m-%d")?
             .and_hms_opt(0, 0, 0)
@@ -102,7 +111,11 @@ impl GoogleCalendarService {
 
         let mut fetch_futures = Vec::new();
         for calendar_id in &self.config.source.google.calendar.get_events.calendar_ids {
-            let fut = self.calendar_client.fetch_calendar_events(calendar_id, &since_rfc3339, &until_rfc3339);
+            let fut = self.calendar_client.fetch_calendar_events(
+                calendar_id,
+                &since_rfc3339,
+                &until_rfc3339,
+            );
             fetch_futures.push(fut);
         }
 

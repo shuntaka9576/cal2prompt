@@ -1,0 +1,41 @@
+codecov:
+  require_ci_to_pass: yes
+  notify:
+    wait_for_ci: yes
+
+coverage:
+  precision: 2
+  round: down
+  range: "60...90"
+  status:
+    project:
+      default:
+        target: auto
+        threshold: 2%
+        informational: true
+    patch:
+      default:
+        target: auto
+        threshold: 5%
+        informational: true
+
+parsers:
+  gcov:
+    branch_detection:
+      conditional: yes
+      loop: yes
+      method: no
+      macro: no
+
+ignore:
+  - "tests/**/*"
+  - "examples/**/*"
+  - "benches/**/*"
+  - "**/*.md"
+
+comment:
+  layout: "reach,diff,flags,files,footer"
+  behavior: default
+  require_changes: no
+  require_base: no
+  require_head: no

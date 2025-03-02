@@ -50,8 +50,38 @@ args = [
   "--test-threads=1",
 ]
 
+[tasks.install-nextest]
+install_crate = { crate_name = "cargo-nextest", binary = "cargo", test_arg = ["nextest", "--help"] }
+
+[tasks.coverage-ci]
+extend = "set-env-local"
+install_crate = { crate_name = "cargo-llvm-cov", binary = "cargo", test_arg = ["llvm-cov", "--help"] }
+dependencies = ["install-nextest"]
+command = "cargo"
+args = [
+  "llvm-cov",
+  "--lcov",
+  "--output-path",
+  "lcov.info",
+  "nextest",
+]
+
+[tasks.coverage-html]
+extend = "set-env-local"
+install_crate = { crate_name = "cargo-llvm-cov", binary = "cargo", test_arg = ["llvm-cov", "--help"] }
+dependencies = ["install-nextest"]
+command = "cargo"
+args = [
+  "llvm-cov",
+  "--html",
+  "nextest",
+]
+
 [tasks.clippy-ci]
-run_task = "clippy"
+run_task = { name = "clippy", fork = true, silent = true }
 
 [tasks.test-ci]
-run_task = "test"
+run_task = { name = "test", fork = true, silent = true }
+
+[tasks.coverage-ci-run]
+run_task = { name = "coverage-ci", fork = true, silent = true }
