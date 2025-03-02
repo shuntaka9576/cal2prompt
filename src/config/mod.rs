@@ -144,34 +144,11 @@ fn load_config(config_file_path: &Path) -> anyhow::Result<Config> {
     let config_eval = lua.load(&config_code).eval()?;
 
     if let Value::Table(config_tbl) = config_eval {
-        let source_tbl: Table = config_tbl
-            .get::<_, Option<Table>>("source")?
-            .ok_or_else(|| {
-                ConfigError::RequiredFieldNotFound(
-                    "source".to_owned(),
-                    utils::path::contract_tilde(config_file_path),
-                )
-            })?;
-
-        let google_tbl: Table = source_tbl
-            .get::<_, Option<Table>>("google")?
-            .ok_or_else(|| {
-                ConfigError::RequiredFieldNotFound(
-                    "source.google".to_owned(),
-                    utils::path::contract_tilde(config_file_path),
-                )
-            })?;
-        let google_oauth2_tbl: Table =
-            google_tbl
-                .get::<_, Option<Table>>("oauth2")?
-                .ok_or_else(|| {
-                    ConfigError::RequiredFieldNotFound(
-                        "source.google.oauth2".to_owned(),
-                        utils::path::contract_tilde(config_file_path),
-                    )
-                })?;
+        let source_tbl: Table = config_tbl.get::<Table>("source")?;
+        let google_tbl: Table = source_tbl.get::<Table>("google")?;
+        let google_oauth2_tbl: Table = google_tbl.get::<Table>("oauth2")?;
         let google_oauth2_client_id: String = google_oauth2_tbl
-            .get::<_, Option<String>>("clientID")?
+            .get::<Option<String>>("clientID")?
             .ok_or_else(|| {
                 ConfigError::RequiredFieldNotFound(
                     "source.google.oauth2.clientID".to_owned(),
@@ -179,7 +156,7 @@ fn load_config(config_file_path: &Path) -> anyhow::Result<Config> {
                 )
             })?;
         let google_oauth2_client_secret: String = google_oauth2_tbl
-            .get::<_, Option<String>>("clientSecret")?
+            .get::<Option<String>>("clientSecret")?
             .ok_or_else(|| {
                 ConfigError::RequiredFieldNotFound(
                     "source.google.oauth2.clientSecret".to_owned(),
@@ -191,25 +168,25 @@ fn load_config(config_file_path: &Path) -> anyhow::Result<Config> {
         default_scopes_table.push("https://www.googleapis.com/auth/calendar.events")?;
 
         let google_oauth2_scopes: Vec<String> = google_oauth2_tbl
-            .get::<_, Option<Table>>("scopes")?
+            .get::<Option<Table>>("scopes")?
             .unwrap_or(default_scopes_table)
             .sequence_values()
             .collect::<Result<_, _>>()?;
 
-        let google_calendar_tbl: Table = google_tbl.get("calendar")?;
-        let google_get_events_tbl: Table = google_calendar_tbl.get("getEvents")?;
-        let calendar_ids_table: Table = google_get_events_tbl.get("calendarIDs")?;
+        let google_calendar_tbl: Table = google_tbl.get::<Table>("calendar")?;
+        let google_get_events_tbl: Table = google_calendar_tbl.get::<Table>("getEvents")?;
+        let calendar_ids_table: Table = google_get_events_tbl.get::<Table>("calendarIDs")?;
         let calendar_ids: Vec<String> = calendar_ids_table
             .sequence_values()
             .collect::<Result<_, _>>()?;
 
         let redirect_url: String = google_oauth2_tbl
-            .get::<_, Option<String>>("redirectURL")?
+            .get::<Option<String>>("redirectURL")?
             .unwrap_or("http://127.0.0.1:9004".to_string());
 
-        let output_tbl: Table = config_tbl.get("output")?;
+        let output_tbl: Table = config_tbl.get::<Table>("output")?;
         let template: String = output_tbl
-            .get::<_, Option<String>>("template")?
+            .get::<Option<String>>("template")?
             .ok_or_else(|| {
                 ConfigError::RequiredFieldNotFound(
                     "template not found".to_owned(),
@@ -218,14 +195,14 @@ fn load_config(config_file_path: &Path) -> anyhow::Result<Config> {
             })?;
 
         let oauth_default_path = get_oauth_path()?;
-        let settings: Settings = match config_tbl.get::<_, Option<Table>>("settings") {
+        let settings: Settings = match config_tbl.get::<Option<Table>>("settings") {
             Ok(settings_tbl) => match settings_tbl {
                 Some(table) => {
                     let oauth_file_path = table
-                        .get::<_, Option<String>>("oauthFilePath")?
+                        .get::<Option<String>>("oauthFilePath")?
                         .unwrap_or(oauth_default_path.to_string_lossy().to_string());
                     let tz = table
-                        .get::<_, Option<String>>("TZ")?
+                        .get::<Option<String>>("TZ")?
                         .unwrap_or("UTC".to_string());
 
                     Settings {
@@ -244,20 +221,25 @@ fn load_config(config_file_path: &Path) -> anyhow::Result<Config> {
             },
         };
 
-        let lua = Lua::new();
-        let experimental_tbl = config_tbl
-            .get::<_, Option<Table>>("experimental")?
-            .unwrap_or_else(|| lua.create_table().expect("failed to create table"));
+        let experimental_tbl = match config_tbl.get::<Option<Table>>("experimental") {
+            Ok(experimental_tbl) => experimental_tbl,
+            Err(_) => Some(lua.create_table().expect("failed to create table")),
+        }
+        .unwrap_or_else(|| lua.create_table().expect("failed to create table"));
 
-        let mcp_tbl = experimental_tbl
-            .get::<_, Option<Table>>("mcp")?
-            .unwrap_or_else(|| lua.create_table().expect("failed to create table"));
+        let mcp_tbl = match experimental_tbl.get::<Option<Table>>("mcp") {
+            Ok(mcp_tbl) => mcp_tbl,
+            Err(_) => Some(lua.create_table().expect("failed to create table")),
+        }
+        .unwrap_or_else(|| lua.create_table().expect("failed to create table"));
 
-        let insert_tbl = mcp_tbl
-            .get::<_, Option<Table>>("insertCalendarEvent")?
-            .unwrap_or_else(|| lua.create_table().expect("failed to create table"));
+        let insert_tbl = match mcp_tbl.get::<Option<Table>>("insertCalendarEvent") {
+            Ok(insert_tbl) => insert_tbl,
+            Err(_) => Some(lua.create_table().expect("failed to create table")),
+        }
+        .unwrap_or_else(|| lua.create_table().expect("failed to create table"));
 
-        let calendar_id = insert_tbl.get::<_, Option<String>>("calendarID")?;
+        let calendar_id = insert_tbl.get::<Option<String>>("calendarID")?;
 
         let experimental = Experimental {
             mcp: Mcp {
