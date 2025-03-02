@@ -1,4 +1,4 @@
-use crate::core::cal2prompt::{Cal2Prompt, JsonRpcErrorCode};
+use crate::core::cal2prompt::{Cal2Prompt, Cal2PromptError, JsonRpcErrorCode};
 use crate::google::calendar::service::CalendarServiceError;
 use crate::mcp::stdio::{Message, StdioTransport, Transport};
 use futures::StreamExt;
@@ -8,11 +8,15 @@ static TOOLS_JSON: &str = include_str!("./tools.json");
 
 pub struct McpHandler<'a> {
     cal2prompt: &'a mut Cal2Prompt,
+    initialized: bool,
 }
 
 impl<'a> McpHandler<'a> {
     pub fn new(cal2prompt: &'a mut Cal2Prompt) -> Self {
-        Self { cal2prompt }
+        Self {
+            cal2prompt,
+            initialized: false,
+        }
     }
 
     pub async fn launch_mcp(&mut self, transport: &StdioTransport) -> anyhow::Result<()> {
@@ -30,15 +34,104 @@ impl<'a> McpHandler<'a> {
                         id, method, params
                     );
 
-                    if let Err(err) = self.cal2prompt.ensure_valid_token().await {
+                    // Handle initialization request first
+                    if method == "initialize" {
+                        if let Err(err) = self.handle_initialize(transport, id).await {
+                            eprintln!("[SERVER] Error handling initialize: {:?}", err);
+                            self.send_error_response(
+                                transport,
+                                id,
+                                JsonRpcErrorCode::InternalError,
+                                format!("Failed to initialize: {}", err),
+                            )
+                            .await?;
+                        }
+                        self.initialized = true;
+                        continue;
+                    }
+
+                    // For all other requests, ensure we're initialized
+                    if !self.initialized {
                         self.send_error_response(
                             transport,
                             id,
-                            JsonRpcErrorCode::InternalError,
-                            format!("Failed to refresh token: {}", err),
+                            JsonRpcErrorCode::InvalidRequest,
+                            "Server not initialized. Send 'initialize' request first.".to_string(),
                         )
                         .await?;
                         continue;
+                    }
+
+                    // Allow tools/list without requiring OAuth
+                    if method == "tools/list" {
+                        if let Err(err) = self.handle_tools_list(transport, id).await {
+                            eprintln!("[SERVER] Error handling tools/list: {:?}", err);
+                            self.send_error_response(
+                                transport,
+                                id,
+                                JsonRpcErrorCode::InternalError,
+                                format!("Failed to list tools: {}", err),
+                            )
+                            .await?;
+                        }
+                        continue;
+                    }
+
+                    // For tools/call and other methods that require authentication
+                    if method == "tools/call" {
+                        // Perform OAuth if not done yet
+                        if self.cal2prompt.token.is_none() {
+                            if let Err(err) = self.cal2prompt.oauth().await {
+                                // Check for OAuth2PortInUse error using proper type checking
+                                if let Some(Cal2PromptError::OAuth2PortInUse(_)) =
+                                    err.downcast_ref::<Cal2PromptError>()
+                                {
+                                    self.send_error_response(
+                                        transport,
+                                        id,
+                                        JsonRpcErrorCode::PortInUse,
+                                        "Port 9004 is already in use. Another instance of cal2prompt or Windsurf may be running.".to_string(),
+                                    )
+                                    .await?;
+                                    continue;
+                                }
+
+                                self.send_error_response(
+                                    transport,
+                                    id,
+                                    JsonRpcErrorCode::InternalError,
+                                    format!("Failed to authenticate: {}", err),
+                                )
+                                .await?;
+                                continue;
+                            }
+                        }
+
+                        // Ensure token is valid for all requests that need authentication
+                        if let Err(err) = self.cal2prompt.ensure_valid_token().await {
+                            // Check for OAuth2PortInUse error using proper type checking
+                            if let Some(Cal2PromptError::OAuth2PortInUse(_)) =
+                                err.downcast_ref::<Cal2PromptError>()
+                            {
+                                self.send_error_response(
+                                    transport,
+                                    id,
+                                    JsonRpcErrorCode::PortInUse,
+                                    "Port 9004 is already in use. Another instance of cal2prompt or Windsurf may be running.".to_string(),
+                                )
+                                .await?;
+                                continue;
+                            }
+
+                            self.send_error_response(
+                                transport,
+                                id,
+                                JsonRpcErrorCode::InternalError,
+                                format!("Failed to refresh token: {}", err),
+                            )
+                            .await?;
+                            continue;
+                        }
                     }
 
                     if let Err(err) = self.handle_request(transport, id, method, params).await {

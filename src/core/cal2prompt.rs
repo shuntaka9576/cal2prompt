@@ -3,7 +3,7 @@ use crate::core::event::{EventDurationCalculator, RealClock};
 use crate::core::template::generate;
 use crate::google::calendar::model::{CreatedEventResponse, EventItem};
 use crate::google::calendar::service::GoogleCalendarService;
-use crate::google::oauth::{OAuth2Client, Token};
+use crate::google::oauth::{OAuth2Client, OAuth2Error, Token};
 use crate::mcp::handler::McpHandler;
 use crate::mcp::stdio::StdioTransport;
 use crate::shared::utils::date::intersection_days;
@@ -14,6 +14,15 @@ use std::collections::BTreeMap;
 use std::fs;
 use std::path::Path;
 
+#[derive(Debug, thiserror::Error)]
+pub enum Cal2PromptError {
+    #[error("OAuth2 port in use: {0}")]
+    OAuth2PortInUse(#[from] OAuth2Error),
+
+    #[error(transparent)]
+    Other(#[from] anyhow::Error),
+}
+
 #[derive(Debug)]
 #[allow(dead_code)]
 pub enum JsonRpcErrorCode {
@@ -22,11 +31,13 @@ pub enum JsonRpcErrorCode {
     MethodNotFound = -32601,
     InvalidParams = -32602,
     InternalError = -32603,
+    // Custom error codes should be in the range -32000 to -32099
+    PortInUse = -32000,
 }
 
 pub struct Cal2Prompt {
     config: Config,
-    token: Option<Token>,
+    pub token: Option<Token>,
 }
 
 #[derive(Debug, Serialize)]
@@ -84,19 +95,40 @@ impl Cal2Prompt {
                         self.save_token(&refreshed).await?;
                         refreshed
                     } else {
-                        let token = oauth2_client.oauth_flow().await?;
-                        self.save_token(&token).await?;
-                        token
+                        match oauth2_client.oauth_flow().await {
+                            Ok(token) => {
+                                self.save_token(&token).await?;
+                                token
+                            }
+                            Err(e) => {
+                                if let Some(OAuth2Error::PortInUse) =
+                                    e.downcast_ref::<OAuth2Error>()
+                                {
+                                    return Err(Cal2PromptError::OAuth2PortInUse(
+                                        OAuth2Error::PortInUse,
+                                    )
+                                    .into());
+                                }
+                                return Err(e);
+                            }
+                        }
                     }
                 } else {
                     stored
                 }
             }
-            Err(_) => {
-                let new_token = oauth2_client.oauth_flow().await?;
-                self.save_token(&new_token).await?;
-                new_token
-            }
+            Err(_) => match oauth2_client.oauth_flow().await {
+                Ok(new_token) => {
+                    self.save_token(&new_token).await?;
+                    new_token
+                }
+                Err(e) => {
+                    if let Some(OAuth2Error::PortInUse) = e.downcast_ref::<OAuth2Error>() {
+                        return Err(Cal2PromptError::OAuth2PortInUse(OAuth2Error::PortInUse).into());
+                    }
+                    return Err(e);
+                }
+            },
         };
 
         self.token = Some(token);
@@ -118,9 +150,21 @@ impl Cal2Prompt {
                     self.save_token(&refreshed).await?;
                     self.token = Some(refreshed);
                 } else {
-                    let new_token = oauth2_client.oauth_flow().await?;
-                    self.save_token(&new_token).await?;
-                    self.token = Some(new_token);
+                    match oauth2_client.oauth_flow().await {
+                        Ok(new_token) => {
+                            self.save_token(&new_token).await?;
+                            self.token = Some(new_token);
+                        }
+                        Err(e) => {
+                            if let Some(OAuth2Error::PortInUse) = e.downcast_ref::<OAuth2Error>() {
+                                return Err(Cal2PromptError::OAuth2PortInUse(
+                                    OAuth2Error::PortInUse,
+                                )
+                                .into());
+                            }
+                            return Err(e);
+                        }
+                    }
                 }
             }
         }

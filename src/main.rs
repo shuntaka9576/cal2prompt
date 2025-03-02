@@ -76,25 +76,34 @@ async fn main() {
         std::process::exit(0);
     }
 
-    let mut cal2prompt = match init_cal2prompt().await {
-        Ok(cal2prompt) => cal2prompt,
-        Err(e) => {
-            eprintln!("{}", e);
-
-            std::process::exit(1);
-        }
-    };
-
     match &cli.command {
         Some(cmd) => match cmd {
-            Commands::Mcp => match cal2prompt.launch_mcp().await {
-                Ok(_) => {}
-                Err(err) => {
-                    eprint!("{:?}", err);
+            Commands::Mcp => {
+                // For MCP mode, initialize without OAuth to allow proper error handling via JSON-RPC
+                match init_cal2prompt_without_oauth().await {
+                    Ok(mut cal2prompt) => {
+                        if let Err(err) = cal2prompt.launch_mcp().await {
+                            eprintln!("Error: {:?}", err);
+                            std::process::exit(1);
+                        }
+                    }
+                    Err(e) => {
+                        eprintln!("{}", e);
+                        std::process::exit(1);
+                    }
                 }
-            },
+            }
         },
         None => {
+            // For CLI mode, initialize with OAuth as before
+            let cal2prompt = match init_cal2prompt().await {
+                Ok(cal2prompt) => cal2prompt,
+                Err(e) => {
+                    eprintln!("{}", e);
+                    std::process::exit(1);
+                }
+            };
+
             let fetch_mode = determine_duration_or_range(&cli);
 
             match fetch_mode {
@@ -131,6 +140,11 @@ async fn init_cal2prompt() -> anyhow::Result<Cal2Prompt> {
     });
 
     Ok(cal2prompt)
+}
+
+async fn init_cal2prompt_without_oauth() -> anyhow::Result<Cal2Prompt> {
+    // Initialize Cal2Prompt without performing OAuth
+    Cal2Prompt::new()
 }
 
 fn determine_duration_or_range(cli: &Cli) -> FetchMode {
