@@ -12,6 +12,17 @@ use serde::{Deserialize, Serialize};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader as AsyncBufReader};
 use webbrowser;
 
+#[derive(thiserror::Error, Debug)]
+pub enum OAuth2Error {
+    #[error(
+        "Port 9004 is already in use. Another instance of cal2prompt or Windsurf may be running."
+    )]
+    PortInUse,
+
+    #[error("OAuth error: {0}")]
+    Other(String),
+}
+
 pub struct OAuth2Client {
     client: oauth2::Client<
         BasicErrorResponse,
@@ -105,7 +116,18 @@ impl OAuth2Client {
             .strip_prefix("http://")
             .unwrap_or(&redirect_url);
 
-        let listener = tokio::net::TcpListener::bind(redirect_url_host).await?;
+        // Try to bind to the port, handle the error if the port is already in use
+        let listener = match tokio::net::TcpListener::bind(redirect_url_host).await {
+            Ok(listener) => listener,
+            Err(e) => {
+                if e.kind() == std::io::ErrorKind::AddrInUse {
+                    return Err(OAuth2Error::PortInUse.into());
+                } else {
+                    return Err(OAuth2Error::Other(format!("Failed to bind to port: {}", e)).into());
+                }
+            }
+        };
+
         webbrowser::open(authorize_url.as_ref()).unwrap();
 
         let (mut stream, _) = listener.accept().await?;
