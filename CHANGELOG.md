@@ -1,5 +1,13 @@
 # Changelog
 
+## [v0.3.1](https://github.com/shuntaka9576/cal2prompt/compare/v0.3.0...v0.3.1) - 2025-03-02
+- fix: restructure MCP implementation with improved testing infrastructure by @shuntaka9576 in https://github.com/shuntaka9576/cal2prompt/pull/12
+- chore(deps): update codecov/codecov-action action to v5 by @renovate in https://github.com/shuntaka9576/cal2prompt/pull/17
+- fix(deps): update all non-major dependencies by @renovate in https://github.com/shuntaka9576/cal2prompt/pull/16
+- chore(deps): update rust crate tempfile to v3.17.1 by @renovate in https://github.com/shuntaka9576/cal2prompt/pull/18
+- chore(deps): lock file maintenance by @renovate in https://github.com/shuntaka9576/cal2prompt/pull/21
+- fix: port binding error handling in MCP server by @shuntaka9576 in https://github.com/shuntaka9576/cal2prompt/pull/22
+
 ## [v0.3.0](https://github.com/shuntaka9576/cal2prompt/compare/v0.2.0...v0.3.0) - 2025-02-24
 - feat(mcp): improve token handling and error management by @shuntaka9576 in https://github.com/shuntaka9576/cal2prompt/pull/10
 
