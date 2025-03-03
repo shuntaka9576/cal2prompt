@@ -1,24 +1,37 @@
 {
   "$schema": "https://docs.renovatebot.com/renovate-schema.json",
   "extends": [
-    "config:base"
+    "config:recommended"
   ],
-  "schedule": ["every month"],
+  "schedule": [
+    "every month"
+  ],
   "packageRules": [
     {
-      "matchUpdateTypes": ["minor", "patch"],
+      "matchUpdateTypes": [
+        "minor",
+        "patch"
+      ],
       "groupName": "all non-major dependencies",
       "groupSlug": "all-minor-patch"
     },
     {
-      "matchDepTypes": ["dev-dependencies"],
+      "matchDepTypes": [
+        "dev-dependencies"
+      ],
       "groupName": "all dev dependencies",
-      "schedule": ["every 3 months"]
+      "schedule": [
+        "every 3 months"
+      ]
     },
     {
-      "matchManagers": ["github-actions"],
+      "matchManagers": [
+        "github-actions"
+      ],
       "groupName": "all GitHub Actions",
-      "schedule": ["every month"]
+      "schedule": [
+        "every month"
+      ]
     }
   ],
   "prHourlyLimit": 1,
@@ -30,11 +43,17 @@
   },
   "vulnerabilityAlerts": {
     "enabled": true,
-    "labels": ["security"]
+    "labels": [
+      "security"
+    ]
   },
-  "labels": ["dependencies"],
+  "labels": [
+    "dependencies"
+  ],
   "lockFileMaintenance": {
     "enabled": true,
-    "schedule": ["every month"]
+    "schedule": [
+      "every month"
+    ]
   }
 }
