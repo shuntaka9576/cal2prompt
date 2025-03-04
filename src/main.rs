@@ -51,6 +51,13 @@ pub struct Cli {
     pub next_week: bool,
     #[arg(long, short = 'V', help = "Print version")]
     pub version: bool,
+    #[arg(
+        long,
+        short = 'p',
+        value_name = "PROFILE",
+        help = "Specify a profile name to use (e.g., 'work' or 'private')"
+    )]
+    pub profile: Option<String>,
 }
 
 enum FetchMode {
@@ -108,28 +115,42 @@ async fn main() {
 
             match fetch_mode {
                 FetchMode::Shortcut(duration) => {
-                    match cal2prompt.get_events_short_cut(duration).await {
-                        Ok(generate) => {
-                            println!("{}", generate);
+                    match cal2prompt
+                        .fetch_duration(duration, cli.profile.as_deref())
+                        .await
+                    {
+                        Ok(output) => {
+                            println!("{}", output);
                         }
-                        Err(err) => {
-                            eprint!("{:?}", err);
+                        Err(e) => {
+                            eprintln!("{}", e);
+                            std::process::exit(1);
                         }
                     }
                 }
                 FetchMode::Range(since, until) => {
-                    match cal2prompt.get_events_duration(since, until).await {
-                        Ok(generate) => {
-                            println!("{}", generate);
-                        }
-                        Err(err) => {
-                            eprint!("{:?}", err);
+                    match cal2prompt
+                        .fetch_days(&since, &until, cli.profile.as_deref())
+                        .await
+                    {
+                        Ok(days) => match cal2prompt.render_days(days) {
+                            Ok(output) => {
+                                println!("{}", output);
+                            }
+                            Err(e) => {
+                                eprintln!("{}", e);
+                                std::process::exit(1);
+                            }
+                        },
+                        Err(e) => {
+                            eprintln!("{}", e);
+                            std::process::exit(1);
                         }
                     }
                 }
             }
         }
-    };
+    }
 }
 
 async fn init_cal2prompt() -> anyhow::Result<Cal2Prompt> {

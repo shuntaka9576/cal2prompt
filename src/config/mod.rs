@@ -5,6 +5,7 @@ use crate::config::error::ConfigError;
 use crate::shared::utils;
 use mlua::{Lua, Table, Value};
 use std::{
+    collections::HashMap,
     env, fs,
     path::{Path, PathBuf},
 };
@@ -12,9 +13,8 @@ use std::{
 #[derive(Debug, PartialEq, Eq, Clone)]
 pub struct Config {
     pub source: Source,
-    pub output: Output,
+    pub prompt: Prompt,
     pub settings: Settings,
-    pub experimental: Experimental,
 }
 
 #[derive(Debug, PartialEq, Eq, Clone)]
@@ -29,14 +29,15 @@ pub struct Source {
 }
 
 #[derive(Debug, PartialEq, Eq, Clone)]
-pub struct Output {
+pub struct Prompt {
     pub template: String,
+    pub calendar_ids: Vec<String>,
 }
 
 #[derive(Debug, PartialEq, Eq, Clone)]
 pub struct GoogleSource {
     pub oauth2: GoogleOAuth2,
-    pub calendar: GoogleCalendar,
+    pub profile: HashMap<String, ProfileConfig>,
 }
 
 #[derive(Debug, PartialEq, Eq, Clone)]
@@ -48,28 +49,9 @@ pub struct GoogleOAuth2 {
 }
 
 #[derive(Debug, PartialEq, Eq, Clone)]
-pub struct GoogleCalendar {
-    pub get_events: GoogleCalendarGetEvents,
-}
-
-#[derive(Debug, PartialEq, Eq, Clone)]
-pub struct GoogleCalendarGetEvents {
+pub struct ProfileConfig {
     pub calendar_ids: Vec<String>,
-}
-
-#[derive(Debug, PartialEq, Eq, Clone)]
-pub struct Experimental {
-    pub mcp: Mcp,
-}
-
-#[derive(Debug, PartialEq, Eq, Clone)]
-pub struct Mcp {
-    pub insert_calendar_event: InsertCalendarEvent,
-}
-
-#[derive(Debug, PartialEq, Eq, Clone)]
-pub struct InsertCalendarEvent {
-    pub calendar_id: Option<String>,
+    pub authorize_account: String,
 }
 
 pub fn init() -> anyhow::Result<Config> {
@@ -173,23 +155,60 @@ fn load_config(config_file_path: &Path) -> anyhow::Result<Config> {
             .sequence_values()
             .collect::<Result<_, _>>()?;
 
-        let google_calendar_tbl: Table = google_tbl.get::<Table>("calendar")?;
-        let google_get_events_tbl: Table = google_calendar_tbl.get::<Table>("getEvents")?;
-        let calendar_ids_table: Table = google_get_events_tbl.get::<Table>("calendarIDs")?;
-        let calendar_ids: Vec<String> = calendar_ids_table
-            .sequence_values()
-            .collect::<Result<_, _>>()?;
+        let mut profiles = HashMap::new();
+        if let Ok(profile_tbl) = google_tbl.get::<Table>("profile") {
+            for (profile_name, profile_data) in profile_tbl.pairs::<String, Table>().flatten() {
+                let authorize_account: String = profile_data
+                    .get::<Option<String>>("authorizeAccount")?
+                    .ok_or_else(|| {
+                        ConfigError::RequiredFieldNotFound(
+                            "source.google.calendar.getEvents.authorizeAccount".to_owned(),
+                            utils::path::contract_tilde(config_file_path),
+                        )
+                    })?;
+
+                if let Ok(calendar_ids_tbl) = profile_data.get::<Table>("calendarIDs") {
+                    let calendar_ids: Vec<String> = calendar_ids_tbl
+                        .sequence_values()
+                        .filter_map(|v| {
+                            v.ok()
+                                .and_then(|val: mlua::Value| val.as_str().map(|s| s.to_string()))
+                        })
+                        .collect();
+
+                    profiles.insert(
+                        profile_name,
+                        ProfileConfig {
+                            calendar_ids,
+                            authorize_account,
+                        },
+                    );
+                }
+            }
+        }
 
         let redirect_url: String = google_oauth2_tbl
             .get::<Option<String>>("redirectURL")?
             .unwrap_or("http://127.0.0.1:9004".to_string());
 
-        let output_tbl: Table = config_tbl.get::<Table>("output")?;
-        let template: String = output_tbl
+        let prompt_tbl = match config_tbl.get::<Table>("prompt") {
+            Ok(tbl) => tbl,
+            Err(_) => {
+                let default_tbl = lua.create_table()?;
+                default_tbl.set("template", crate::config::templates::google::STANDARD)?;
+                default_tbl
+            }
+        };
+
+        let template: String = prompt_tbl
             .get::<Option<String>>("template")?
+            .unwrap_or(crate::config::templates::google::STANDARD.to_string());
+
+        let prompt_calendar_ids: Vec<String> = prompt_tbl
+            .get::<Option<Vec<String>>>("calendarIDs")?
             .ok_or_else(|| {
                 ConfigError::RequiredFieldNotFound(
-                    "template not found".to_owned(),
+                    "prompt.calendarIDs".to_owned(),
                     utils::path::contract_tilde(config_file_path),
                 )
             })?;
@@ -221,32 +240,6 @@ fn load_config(config_file_path: &Path) -> anyhow::Result<Config> {
             },
         };
 
-        let experimental_tbl = match config_tbl.get::<Option<Table>>("experimental") {
-            Ok(experimental_tbl) => experimental_tbl,
-            Err(_) => Some(lua.create_table().expect("failed to create table")),
-        }
-        .unwrap_or_else(|| lua.create_table().expect("failed to create table"));
-
-        let mcp_tbl = match experimental_tbl.get::<Option<Table>>("mcp") {
-            Ok(mcp_tbl) => mcp_tbl,
-            Err(_) => Some(lua.create_table().expect("failed to create table")),
-        }
-        .unwrap_or_else(|| lua.create_table().expect("failed to create table"));
-
-        let insert_tbl = match mcp_tbl.get::<Option<Table>>("insertCalendarEvent") {
-            Ok(insert_tbl) => insert_tbl,
-            Err(_) => Some(lua.create_table().expect("failed to create table")),
-        }
-        .unwrap_or_else(|| lua.create_table().expect("failed to create table"));
-
-        let calendar_id = insert_tbl.get::<Option<String>>("calendarID")?;
-
-        let experimental = Experimental {
-            mcp: Mcp {
-                insert_calendar_event: InsertCalendarEvent { calendar_id },
-            },
-        };
-
         let config = Config {
             source: Source {
                 google: GoogleSource {
@@ -256,14 +249,14 @@ fn load_config(config_file_path: &Path) -> anyhow::Result<Config> {
                         redirect_url,
                         scopes: google_oauth2_scopes,
                     },
-                    calendar: GoogleCalendar {
-                        get_events: GoogleCalendarGetEvents { calendar_ids },
-                    },
+                    profile: profiles,
                 },
             },
-            output: Output { template },
+            prompt: Prompt {
+                template,
+                calendar_ids: prompt_calendar_ids,
+            },
             settings,
-            experimental,
         };
         Ok(config)
     } else {
@@ -296,26 +289,28 @@ return {
   source = {
     google = {
       oauth2 = {
-        clientID = secrets.googleOAuth2Client.clientID,
-        clientSecret = secrets.googleOAuth2Client.clientSecret,
+        clientID = secrets.google.oauth2.clientID,
+        clientSecret = secrets.google.oauth2.clientSecret,
         redirectURL = "http://127.0.0.1:9004",
       },
-      calendar = {
-        getEvents = {
-          calendarIDs = { "test@example.com" }
+      profile = {
+        work = {
+          calendarIDs = { "test@example.com" },
+          authorizeAccount = "test@example.com"
+        },
+        private = {
+          calendarIDs = { "private@example.com" },
+          authorizeAccount = "private@example.com"
         }
       }
     },
   },
-  experimental = {
-    mcp = {
-        insertCalendarEvent = {
-          calendarID = "test@example.com"
-        }
-    }
-  },
-  output = {
-    template = cal2prompt.template.google.standard
+  prompt = {
+    template = cal2prompt.template.google.standard,
+    calendarIDs = {
+      "test@example.com",
+      "private@example.com",
+    },
   }
 }
 "#;
@@ -324,9 +319,29 @@ return {
         let secrets_code = r#"
 local M = {}
 
-M.googleOAuth2Client = {
-  clientID = "test_client_id",
-  clientSecret = "test_client_secret",
+M.google = {
+  oauth2 = {
+    clientID = "test_client_id",
+    clientSecret = "test_client_secret",
+  },
+  work = {
+    authorizeAccount = "test@example.com",
+    calendarIDs = {
+      "test@example.com",
+    },
+  },
+  private = {
+    authorizeAccount = "private@example.com",
+    calendarIDs = {
+      "private@example.com",
+    },
+  },
+  prompt = {
+    calendarIDs = {
+      "test@example.com",
+      "private@example.com",
+    },
+  }
 }
 
 return M
@@ -338,7 +353,22 @@ return M
         let home_dir = env::var("HOME")?;
         let oauth_file_path = format!("{}/.local/share/cal2prompt/oauth", home_dir);
         let tz = "UTC".to_string();
-        let calendar_ids = vec!["test@example.com".to_string()];
+
+        let mut profiles = HashMap::new();
+        profiles.insert(
+            "work".to_string(),
+            ProfileConfig {
+                calendar_ids: vec!["test@example.com".to_string()],
+                authorize_account: "test@example.com".to_string(),
+            },
+        );
+        profiles.insert(
+            "private".to_string(),
+            ProfileConfig {
+                calendar_ids: vec!["private@example.com".to_string()],
+                authorize_account: "private@example.com".to_string(),
+            },
+        );
 
         let expected = Config {
             source: Source {
@@ -349,24 +379,19 @@ return M
                         redirect_url: "http://127.0.0.1:9004".to_string(),
                         scopes: vec!["https://www.googleapis.com/auth/calendar.events".to_string()],
                     },
-                    calendar: GoogleCalendar {
-                        get_events: GoogleCalendarGetEvents { calendar_ids },
-                    },
+                    profile: profiles,
                 },
             },
-            output: Output {
+            prompt: Prompt {
                 template: crate::config::templates::google::STANDARD.to_string(),
+                calendar_ids: vec![
+                    "test@example.com".to_string(),
+                    "private@example.com".to_string(),
+                ],
             },
             settings: Settings {
                 oauth_file_path,
                 tz,
-            },
-            experimental: Experimental {
-                mcp: Mcp {
-                    insert_calendar_event: InsertCalendarEvent {
-                        calendar_id: Some("test@example.com".to_string()),
-                    },
-                },
             },
         };
 
@@ -391,18 +416,21 @@ return {
   source = {
     google = {
       oauth2 = {
-        clientID = secrets.googleOAuth2Client.clientID,
-        clientSecret = secrets.googleOAuth2Client.clientSecret,
+        clientID = secrets.google.oauth2.clientID,
+        clientSecret = secrets.google.oauth2.clientSecret,
       },
       calendar = {
         getEvents = {
-          calendarIDs = { "test@example.com" }
+          calendarIDs = { "test@example.com" },
+          authorizeAccount = "test@example.com"
         }
       }
     },
   },
-  output = {
-    template = cal2prompt.template.google.standard
+  prompt = {
+    calendarIDs = {
+      "test@example.com",
+    },
   }
 }
 "#;
@@ -411,9 +439,23 @@ return {
         let secrets_code = r#"
 local M = {}
 
-M.googleOAuth2Client = {
-  clientID = "test_client_id",
-  clientSecret = "test_client_secret",
+M.google = {
+  oauth2 = {
+    clientID = "test_client_id",
+    clientSecret = "test_client_secret",
+  },
+  work = {
+    authorizeAccount = "test@example.com",
+    calendarIDs = {
+      "test@example.com",
+    },
+  },
+  private = {
+    authorizeAccount = "private@example.com",
+    calendarIDs = {
+      "private@example.com",
+    },
+  },
 }
 
 return M
@@ -425,7 +467,6 @@ return M
         let home_dir = env::var("HOME")?;
         let oauth_file_path = format!("{}/.local/share/cal2prompt/oauth", home_dir);
         let tz = "UTC".to_string();
-        let calendar_ids = vec!["test@example.com".to_string()];
 
         let expected = Config {
             source: Source {
@@ -436,22 +477,16 @@ return M
                         redirect_url: "http://127.0.0.1:9004".to_string(),
                         scopes: vec!["https://www.googleapis.com/auth/calendar.events".to_string()],
                     },
-                    calendar: GoogleCalendar {
-                        get_events: GoogleCalendarGetEvents { calendar_ids },
-                    },
+                    profile: HashMap::new(),
                 },
             },
-            output: Output {
+            prompt: Prompt {
                 template: crate::config::templates::google::STANDARD.to_string(),
+                calendar_ids: vec!["test@example.com".to_string()],
             },
             settings: Settings {
                 oauth_file_path,
                 tz,
-            },
-            experimental: Experimental {
-                mcp: Mcp {
-                    insert_calendar_event: InsertCalendarEvent { calendar_id: None },
-                },
             },
         };
 

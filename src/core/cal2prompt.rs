@@ -33,6 +33,8 @@ pub enum JsonRpcErrorCode {
     InternalError = -32603,
     // Custom error codes should be in the range -32000 to -32099
     PortInUse = -32000,
+    ProfileNotFound = -32001,
+    CalendarIdNotFound = -32002,
 }
 
 pub struct Cal2Prompt {
@@ -198,7 +200,12 @@ impl Cal2Prompt {
             .await
     }
 
-    pub async fn fetch_days(&self, since: &str, until: &str) -> anyhow::Result<Vec<Day>> {
+    pub async fn fetch_days(
+        &self,
+        since: &str,
+        until: &str,
+        profile: Option<&str>,
+    ) -> anyhow::Result<Vec<Day>> {
         let tz: Tz =
             self.config.settings.tz.parse().unwrap_or_else(|_| {
                 panic!("Invalid time zone string '{}'", self.config.settings.tz)
@@ -222,7 +229,9 @@ impl Cal2Prompt {
                 .clone(),
         );
 
-        let all_events = calendar_service.get_calendar_events(since, until).await?;
+        let all_events = calendar_service
+            .get_calendar_events_for_profile(since, until, profile)
+            .await?;
 
         Ok(Self::group_events_into_days(
             all_events,
@@ -339,14 +348,22 @@ impl Cal2Prompt {
         days
     }
 
-    pub async fn get_events_duration(self, since: String, until: String) -> anyhow::Result<String> {
-        let days = self.fetch_days(&since, &until).await?;
-        generate(&self.config.output.template, days)
+    #[allow(dead_code)]
+    pub async fn get_events_duration(
+        self,
+        since: String,
+        until: String,
+        profile: Option<&str>,
+    ) -> anyhow::Result<String> {
+        let days = self.fetch_days(&since, &until, profile).await?;
+        self.render_days(days)
     }
 
+    #[allow(dead_code)]
     pub async fn get_events_short_cut(
         self,
         get_event_duration: GetEventDuration,
+        profile: Option<&str>,
     ) -> anyhow::Result<String> {
         let tz: Tz =
             self.config.settings.tz.parse().unwrap_or_else(|_| {
@@ -359,8 +376,32 @@ impl Cal2Prompt {
         let since = since_with_tz.format("%Y-%m-%d").to_string();
         let until = until_with_tz.format("%Y-%m-%d").to_string();
 
-        let days = self.fetch_days(&since, &until).await?;
-        generate(&self.config.output.template, days)
+        let days = self.fetch_days(&since, &until, profile).await?;
+        self.render_days(days)
+    }
+
+    pub async fn fetch_duration(
+        &self,
+        get_event_duration: GetEventDuration,
+        profile: Option<&str>,
+    ) -> anyhow::Result<String> {
+        let tz: Tz =
+            self.config.settings.tz.parse().unwrap_or_else(|_| {
+                panic!("Invalid time zone string '{}'", self.config.settings.tz)
+            });
+
+        let calculator = EventDurationCalculator::new(RealClock);
+        let (since_with_tz, until_with_tz) = calculator.get_duration(&tz, get_event_duration);
+
+        let since = since_with_tz.format("%Y-%m-%d").to_string();
+        let until = until_with_tz.format("%Y-%m-%d").to_string();
+
+        let days = self.fetch_days(&since, &until, profile).await?;
+        self.render_days(days)
+    }
+
+    pub fn render_days(&self, days: Vec<Day>) -> anyhow::Result<String> {
+        generate(&self.config.prompt.template, days)
     }
 
     async fn save_token(&self, token: &Token) -> anyhow::Result<()> {

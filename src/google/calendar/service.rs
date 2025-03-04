@@ -13,6 +13,8 @@ use crate::shared::utils::date::to_utc_start_of_start_rfc3339;
 pub enum CalendarServiceError {
     #[error("No calendar_id configured. Please specify experimental.mcp.insertCalendarEvent.calendarID in your config.")]
     NoCalendarId,
+    #[error("Profile '{0}' not found in configuration")]
+    ProfileNotFound(String),
 }
 
 pub struct GoogleCalendarService {
@@ -52,10 +54,13 @@ impl GoogleCalendarService {
 
         let Some(calendar_id) = &self
             .config
-            .experimental
-            .mcp
-            .insert_calendar_event
-            .calendar_id
+            .source
+            .google
+            .profile
+            .get("default") // FIXME: get profile from config
+            .unwrap()
+            .calendar_ids
+            .first()
         else {
             return Err(CalendarServiceError::NoCalendarId.into());
         };
@@ -86,10 +91,21 @@ impl GoogleCalendarService {
         Ok(res)
     }
 
+    #[allow(dead_code)]
     pub async fn get_calendar_events(
         &self,
         since: &str,
         until: &str,
+    ) -> anyhow::Result<Vec<EventItem>> {
+        self.get_calendar_events_for_profile(since, until, None)
+            .await
+    }
+
+    pub async fn get_calendar_events_for_profile(
+        &self,
+        since: &str,
+        until: &str,
+        profile_name: Option<&str>,
     ) -> anyhow::Result<Vec<EventItem>> {
         let tz: Tz =
             self.config.settings.tz.parse().unwrap_or_else(|_| {
@@ -110,13 +126,40 @@ impl GoogleCalendarService {
         let until_rfc3339 = to_utc_start_of_start_rfc3339(until_plus_one);
 
         let mut fetch_futures = Vec::new();
-        for calendar_id in &self.config.source.google.calendar.get_events.calendar_ids {
-            let fut = self.calendar_client.fetch_calendar_events(
-                calendar_id,
-                &since_rfc3339,
-                &until_rfc3339,
-            );
-            fetch_futures.push(fut);
+        let mut used_calendar_ids = Vec::new();
+
+        if let Some(profile) = profile_name {
+            if let Some(profile_config) = self.config.source.google.profile.get(profile) {
+                for calendar_id in &profile_config.calendar_ids {
+                    let fut = self.calendar_client.fetch_calendar_events(
+                        calendar_id,
+                        &since_rfc3339,
+                        &until_rfc3339,
+                    );
+                    fetch_futures.push(fut);
+                    used_calendar_ids.push(calendar_id.clone());
+                }
+            } else {
+                return Err(CalendarServiceError::ProfileNotFound(profile.to_string()).into());
+            }
+        } else {
+            for calendar_id in &self
+                .config
+                .source
+                .google
+                .profile
+                .get("work")
+                .unwrap()
+                .calendar_ids
+            {
+                let fut = self.calendar_client.fetch_calendar_events(
+                    calendar_id,
+                    &since_rfc3339,
+                    &until_rfc3339,
+                );
+                fetch_futures.push(fut);
+                used_calendar_ids.push(calendar_id.clone());
+            }
         }
 
         let results = future::join_all(fetch_futures).await;
@@ -130,7 +173,7 @@ impl GoogleCalendarService {
                 Err(e) => {
                     eprintln!(
                         "Error fetching events from calendar_id={}: {}",
-                        &self.config.source.google.calendar.get_events.calendar_ids[i], e
+                        &used_calendar_ids[i], e
                     );
                 }
             }

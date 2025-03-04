@@ -29,121 +29,8 @@ impl<'a> McpHandler<'a> {
                 Ok(Message::Request {
                     id, method, params, ..
                 }) => {
-                    eprintln!(
-                        "[SERVER] Got Request: id={}, method={}, params={:?}",
-                        id, method, params
-                    );
-
-                    // Handle initialization request first
-                    if method == "initialize" {
-                        if let Err(err) = self.handle_initialize(transport, id).await {
-                            eprintln!("[SERVER] Error handling initialize: {:?}", err);
-                            self.send_error_response(
-                                transport,
-                                id,
-                                JsonRpcErrorCode::InternalError,
-                                format!("Failed to initialize: {}", err),
-                            )
-                            .await?;
-                        }
-                        self.initialized = true;
-                        continue;
-                    }
-
-                    // For all other requests, ensure we're initialized
-                    if !self.initialized {
-                        self.send_error_response(
-                            transport,
-                            id,
-                            JsonRpcErrorCode::InvalidRequest,
-                            "Server not initialized. Send 'initialize' request first.".to_string(),
-                        )
+                    self.handle_request_message(transport, id, method, params)
                         .await?;
-                        continue;
-                    }
-
-                    // Allow tools/list without requiring OAuth
-                    if method == "tools/list" {
-                        if let Err(err) = self.handle_tools_list(transport, id).await {
-                            eprintln!("[SERVER] Error handling tools/list: {:?}", err);
-                            self.send_error_response(
-                                transport,
-                                id,
-                                JsonRpcErrorCode::InternalError,
-                                format!("Failed to list tools: {}", err),
-                            )
-                            .await?;
-                        }
-                        continue;
-                    }
-
-                    // For tools/call and other methods that require authentication
-                    if method == "tools/call" {
-                        // Perform OAuth if not done yet
-                        if self.cal2prompt.token.is_none() {
-                            if let Err(err) = self.cal2prompt.oauth().await {
-                                // Check for OAuth2PortInUse error using proper type checking
-                                if let Some(Cal2PromptError::OAuth2PortInUse(_)) =
-                                    err.downcast_ref::<Cal2PromptError>()
-                                {
-                                    self.send_error_response(
-                                        transport,
-                                        id,
-                                        JsonRpcErrorCode::PortInUse,
-                                        "Port 9004 is already in use. Another instance of cal2prompt or Windsurf may be running.".to_string(),
-                                    )
-                                    .await?;
-                                    continue;
-                                }
-
-                                self.send_error_response(
-                                    transport,
-                                    id,
-                                    JsonRpcErrorCode::InternalError,
-                                    format!("Failed to authenticate: {}", err),
-                                )
-                                .await?;
-                                continue;
-                            }
-                        }
-
-                        // Ensure token is valid for all requests that need authentication
-                        if let Err(err) = self.cal2prompt.ensure_valid_token().await {
-                            // Check for OAuth2PortInUse error using proper type checking
-                            if let Some(Cal2PromptError::OAuth2PortInUse(_)) =
-                                err.downcast_ref::<Cal2PromptError>()
-                            {
-                                self.send_error_response(
-                                    transport,
-                                    id,
-                                    JsonRpcErrorCode::PortInUse,
-                                    "Port 9004 is already in use. Another instance of cal2prompt or Windsurf may be running.".to_string(),
-                                )
-                                .await?;
-                                continue;
-                            }
-
-                            self.send_error_response(
-                                transport,
-                                id,
-                                JsonRpcErrorCode::InternalError,
-                                format!("Failed to refresh token: {}", err),
-                            )
-                            .await?;
-                            continue;
-                        }
-                    }
-
-                    if let Err(err) = self.handle_request(transport, id, method, params).await {
-                        eprintln!("[SERVER] Error handling request: {:?}", err);
-                        self.send_error_response(
-                            transport,
-                            id,
-                            JsonRpcErrorCode::InternalError,
-                            format!("Failed to handle request: {}", err),
-                        )
-                        .await?;
-                    }
                 }
                 Ok(Message::Notification { method, params, .. }) => {
                     eprintln!(
@@ -165,6 +52,174 @@ impl<'a> McpHandler<'a> {
             }
         }
 
+        Ok(())
+    }
+
+    async fn handle_request_message(
+        &mut self,
+        transport: &StdioTransport,
+        id: u64,
+        method: String,
+        params: Option<serde_json::Value>,
+    ) -> anyhow::Result<()> {
+        eprintln!(
+            "[SERVER] Got Request: id={}, method={}, params={:?}",
+            id, method, params
+        );
+
+        if method == "initialize" {
+            return self.handle_initialize_request(transport, id).await;
+        }
+
+        if !self.initialized {
+            return self
+                .send_error_response(
+                    transport,
+                    id,
+                    JsonRpcErrorCode::InvalidRequest,
+                    "Server not initialized. Send 'initialize' request first.".to_string(),
+                )
+                .await;
+        }
+
+        match method.as_str() {
+            "tools/list" => self.handle_tools_list_request(transport, id).await,
+            "tools/call" => self.handle_tools_call_request(transport, id, params).await,
+            _ => {
+                self.handle_generic_request(transport, id, method, params)
+                    .await
+            }
+        }
+    }
+
+    async fn handle_initialize_request(
+        &mut self,
+        transport: &StdioTransport,
+        id: u64,
+    ) -> anyhow::Result<()> {
+        if let Err(err) = self.handle_initialize(transport, id).await {
+            eprintln!("[SERVER] Error handling initialize: {:?}", err);
+            return self
+                .send_error_response(
+                    transport,
+                    id,
+                    JsonRpcErrorCode::InternalError,
+                    format!("Failed to initialize: {}", err),
+                )
+                .await;
+        }
+        self.initialized = true;
+        Ok(())
+    }
+
+    async fn handle_tools_list_request(
+        &self,
+        transport: &StdioTransport,
+        id: u64,
+    ) -> anyhow::Result<()> {
+        if let Err(err) = self.handle_tools_list(transport, id).await {
+            eprintln!("[SERVER] Error handling tools/list: {:?}", err);
+            return self
+                .send_error_response(
+                    transport,
+                    id,
+                    JsonRpcErrorCode::InternalError,
+                    format!("Failed to list tools: {}", err),
+                )
+                .await;
+        }
+        Ok(())
+    }
+
+    async fn handle_tools_call_request(
+        &mut self,
+        transport: &StdioTransport,
+        id: u64,
+        params: Option<serde_json::Value>,
+    ) -> anyhow::Result<()> {
+        if let Err(err) = self.ensure_authentication(transport, id).await {
+            return err;
+        }
+
+        if let Some(params_val) = params {
+            self.handle_tools_call(transport, id, params_val).await?;
+        }
+        Ok(())
+    }
+
+    async fn ensure_authentication(
+        &mut self,
+        transport: &StdioTransport,
+        id: u64,
+    ) -> Result<(), anyhow::Result<()>> {
+        if self.cal2prompt.token.is_none() {
+            if let Err(err) = self.cal2prompt.oauth().await {
+                if let Some(Cal2PromptError::OAuth2PortInUse(_)) =
+                    err.downcast_ref::<Cal2PromptError>()
+                {
+                    return Err(self.send_error_response(
+                        transport,
+                        id,
+                        JsonRpcErrorCode::PortInUse,
+                        "Port 9004 is already in use. Another instance of cal2prompt or Windsurf may be running.".to_string(),
+                    )
+                    .await);
+                }
+
+                return Err(self
+                    .send_error_response(
+                        transport,
+                        id,
+                        JsonRpcErrorCode::InternalError,
+                        format!("Failed to authenticate: {}", err),
+                    )
+                    .await);
+            }
+        }
+
+        if let Err(err) = self.cal2prompt.ensure_valid_token().await {
+            if let Some(Cal2PromptError::OAuth2PortInUse(_)) = err.downcast_ref::<Cal2PromptError>()
+            {
+                return Err(self.send_error_response(
+                    transport,
+                    id,
+                    JsonRpcErrorCode::PortInUse,
+                    "Port 9004 is already in use. Another instance of cal2prompt or Windsurf may be running.".to_string(),
+                )
+                .await);
+            }
+
+            return Err(self
+                .send_error_response(
+                    transport,
+                    id,
+                    JsonRpcErrorCode::InternalError,
+                    format!("Failed to refresh token: {}", err),
+                )
+                .await);
+        }
+
+        Ok(())
+    }
+
+    async fn handle_generic_request(
+        &self,
+        transport: &StdioTransport,
+        id: u64,
+        method: String,
+        params: Option<serde_json::Value>,
+    ) -> anyhow::Result<()> {
+        if let Err(err) = self.handle_request(transport, id, method, params).await {
+            eprintln!("[SERVER] Error handling request: {:?}", err);
+            return self
+                .send_error_response(
+                    transport,
+                    id,
+                    JsonRpcErrorCode::InternalError,
+                    format!("Failed to handle request: {}", err),
+                )
+                .await;
+        }
         Ok(())
     }
 
@@ -266,8 +321,15 @@ impl<'a> McpHandler<'a> {
             .pointer("/arguments/until")
             .and_then(Value::as_str)
             .unwrap_or("");
+        let profile = params_val
+            .pointer("/arguments/profile")
+            .and_then(Value::as_str);
 
-        match self.cal2prompt.fetch_days(since_str, until_str).await {
+        match self
+            .cal2prompt
+            .fetch_days(since_str, until_str, profile)
+            .await
+        {
             Ok(days) => {
                 let result_json = json!({ "days": days });
                 let obj_as_str = serde_json::to_string(&result_json)?;
@@ -320,18 +382,36 @@ impl<'a> McpHandler<'a> {
                 self.send_text_response(transport, id, &obj_as_str).await?;
             }
             Err(err) => {
-                let (code, message) = match err.downcast_ref::<CalendarServiceError>() {
-                    Some(CalendarServiceError::NoCalendarId) => {
-                        (JsonRpcErrorCode::InvalidParams, err.to_string())
+                if let Some(err_ref) = err.downcast_ref::<CalendarServiceError>() {
+                    match err_ref {
+                        CalendarServiceError::NoCalendarId => {
+                            self.send_error_response(
+                                transport,
+                                id,
+                                JsonRpcErrorCode::InvalidParams,
+                                err.to_string(),
+                            )
+                            .await?;
+                        }
+                        CalendarServiceError::ProfileNotFound(profile) => {
+                            self.send_error_response(
+                                transport,
+                                id,
+                                JsonRpcErrorCode::ProfileNotFound,
+                                format!("Profile '{}' not found", profile),
+                            )
+                            .await?;
+                        }
                     }
-                    None => (
+                } else {
+                    self.send_error_response(
+                        transport,
+                        id,
                         JsonRpcErrorCode::InternalError,
                         format!("Unexpected error: {}", err),
-                    ),
-                };
-
-                self.send_error_response(transport, id, code, message)
+                    )
                     .await?;
+                }
             }
         }
 
