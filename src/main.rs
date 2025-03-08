@@ -155,10 +155,21 @@ async fn main() {
 
 async fn init_cal2prompt() -> anyhow::Result<Cal2Prompt> {
     let mut cal2prompt = Cal2Prompt::new()?;
-    let _ = cal2prompt.oauth().await.map_err(|e| {
-        eprintln!("{}", e);
-        std::process::exit(1);
-    });
+    let profiles: Vec<String> = cal2prompt
+        .config
+        .source
+        .google
+        .profile
+        .keys()
+        .cloned()
+        .collect();
+
+    for name in profiles {
+        if let Err(e) = cal2prompt.oauth(&name).await {
+            eprintln!("{}", e);
+            std::process::exit(1);
+        }
+    }
 
     Ok(cal2prompt)
 }

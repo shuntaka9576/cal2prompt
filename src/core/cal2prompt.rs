@@ -38,7 +38,7 @@ pub enum JsonRpcErrorCode {
 }
 
 pub struct Cal2Prompt {
-    config: Config,
+    pub config: Config,
     pub token: Option<Token>,
 }
 
@@ -80,26 +80,28 @@ impl Cal2Prompt {
         }
     }
 
-    pub async fn oauth(&mut self) -> anyhow::Result<()> {
+    pub async fn oauth(&mut self, profile: &str) -> anyhow::Result<()> {
         let oauth2_client = OAuth2Client::new(
             &self.config.source.google.oauth2.client_id,
             &self.config.source.google.oauth2.client_secret,
             &self.config.source.google.oauth2.redirect_url,
         );
 
-        let token = match fs::read_to_string(&self.config.settings.oauth_file_path) {
+        let token_path = format!("{}/{}", self.config.settings.oauth2_path, profile);
+
+        let token = match fs::read_to_string(&token_path) {
             Ok(content) => {
                 let stored = serde_json::from_str::<Token>(&content)?;
 
                 if stored.is_expired() {
                     if let Some(ref refresh) = stored.refresh_token {
                         let refreshed = oauth2_client.refresh_token(refresh.clone()).await?;
-                        self.save_token(&refreshed).await?;
+                        self.save_token(&refreshed, profile).await?;
                         refreshed
                     } else {
                         match oauth2_client.oauth_flow().await {
                             Ok(token) => {
-                                self.save_token(&token).await?;
+                                self.save_token(&token, profile).await?;
                                 token
                             }
                             Err(e) => {
@@ -121,7 +123,7 @@ impl Cal2Prompt {
             }
             Err(_) => match oauth2_client.oauth_flow().await {
                 Ok(new_token) => {
-                    self.save_token(&new_token).await?;
+                    self.save_token(&new_token, profile).await?;
                     new_token
                 }
                 Err(e) => {
@@ -138,7 +140,7 @@ impl Cal2Prompt {
         Ok(())
     }
 
-    pub async fn ensure_valid_token(&mut self) -> anyhow::Result<()> {
+    pub async fn ensure_valid_token(&mut self, profile: &str) -> anyhow::Result<()> {
         if let Some(token) = &self.token {
             if token.is_expired() {
                 let oauth2_client = OAuth2Client::new(
@@ -149,12 +151,12 @@ impl Cal2Prompt {
 
                 if let Some(ref refresh_token) = token.refresh_token {
                     let refreshed = oauth2_client.refresh_token(refresh_token.clone()).await?;
-                    self.save_token(&refreshed).await?;
+                    self.save_token(&refreshed, profile).await?;
                     self.token = Some(refreshed);
                 } else {
                     match oauth2_client.oauth_flow().await {
                         Ok(new_token) => {
-                            self.save_token(&new_token).await?;
+                            self.save_token(&new_token, profile).await?;
                             self.token = Some(new_token);
                         }
                         Err(e) => {
@@ -404,14 +406,15 @@ impl Cal2Prompt {
         generate(&self.config.prompt.template, days)
     }
 
-    async fn save_token(&self, token: &Token) -> anyhow::Result<()> {
+    async fn save_token(&self, token: &Token, profile: &str) -> anyhow::Result<()> {
         let text = serde_json::to_string_pretty(&token)?;
+        let token_path = format!("{}/{}", self.config.settings.oauth2_path, profile);
         fs::create_dir_all(
-            Path::new(&self.config.settings.oauth_file_path)
+            Path::new(&token_path)
                 .parent()
                 .expect("Failed to get token dir"),
         )?;
-        fs::write(&self.config.settings.oauth_file_path, text)?;
+        fs::write(&token_path, text)?;
         Ok(())
     }
 }
