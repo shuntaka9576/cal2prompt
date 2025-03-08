@@ -94,7 +94,31 @@ fn get_oauth_path() -> anyhow::Result<PathBuf> {
 
 fn load_config(config_file_path: &Path) -> anyhow::Result<Config> {
     let lua = Lua::new();
+    setup_lua_environment(&lua, config_file_path)?;
 
+    let config_code = fs::read_to_string(config_file_path.to_string_lossy().to_string())?;
+    let config_eval = lua.load(&config_code).eval()?;
+
+    if let Value::Table(config_tbl) = config_eval {
+        let source = parse_source(&config_tbl, config_file_path, &lua)?;
+        let prompt = parse_prompt(&config_tbl, config_file_path, &lua)?;
+        let settings = parse_settings(&config_tbl)?;
+
+        Ok(Config {
+            source,
+            prompt,
+            settings,
+        })
+    } else {
+        Err(ConfigError::RequiredFieldNotFound(
+            "config.lua did not return a table!".to_owned(),
+            utils::path::contract_tilde(config_file_path),
+        )
+        .into())
+    }
+}
+
+fn setup_lua_environment(lua: &Lua, config_file_path: &Path) -> anyhow::Result<()> {
     let config_path = config_file_path
         .parent()
         .unwrap_or_else(|| Path::new(""))
@@ -122,149 +146,157 @@ fn load_config(config_file_path: &Path) -> anyhow::Result<Config> {
 
     loaded.set("cal2prompt", cal2prompt_mod)?;
 
-    let config_code = fs::read_to_string(config_file_path.to_string_lossy().to_string())?;
-    let config_eval = lua.load(&config_code).eval()?;
+    Ok(())
+}
 
-    if let Value::Table(config_tbl) = config_eval {
-        let source_tbl: Table = config_tbl.get::<Table>("source")?;
-        let google_tbl: Table = source_tbl.get::<Table>("google")?;
-        let google_oauth2_tbl: Table = google_tbl.get::<Table>("oauth2")?;
-        let google_oauth2_client_id: String = google_oauth2_tbl
-            .get::<Option<String>>("clientID")?
-            .ok_or_else(|| {
-                ConfigError::RequiredFieldNotFound(
-                    "source.google.oauth2.clientID".to_owned(),
-                    utils::path::contract_tilde(config_file_path),
-                )
-            })?;
-        let google_oauth2_client_secret: String = google_oauth2_tbl
-            .get::<Option<String>>("clientSecret")?
-            .ok_or_else(|| {
-                ConfigError::RequiredFieldNotFound(
-                    "source.google.oauth2.clientSecret".to_owned(),
-                    utils::path::contract_tilde(config_file_path),
-                )
-            })?;
+fn parse_source(config_tbl: &Table, config_file_path: &Path, lua: &Lua) -> anyhow::Result<Source> {
+    let source_tbl: Table = config_tbl.get::<Table>("source")?;
+    let google_tbl: Table = source_tbl.get::<Table>("google")?;
 
-        let default_scopes_table = lua.create_table()?;
-        default_scopes_table.push("https://www.googleapis.com/auth/calendar.events")?;
+    let oauth2 = parse_oauth2(&google_tbl, config_file_path, lua)?;
+    let profile = parse_profiles(&google_tbl, config_file_path)?;
 
-        let google_oauth2_scopes: Vec<String> = google_oauth2_tbl
-            .get::<Option<Table>>("scopes")?
-            .unwrap_or(default_scopes_table)
-            .sequence_values()
-            .collect::<Result<_, _>>()?;
+    Ok(Source {
+        google: GoogleSource { oauth2, profile },
+    })
+}
 
-        let mut profiles = HashMap::new();
-        if let Ok(profile_tbl) = google_tbl.get::<Table>("profile") {
-            for (profile_name, profile_data) in profile_tbl.pairs::<String, Table>().flatten() {
-                let authorize_account: String = profile_data
-                    .get::<Option<String>>("authorizeAccount")?
-                    .ok_or_else(|| {
-                        ConfigError::RequiredFieldNotFound(
-                            "source.google.calendar.getEvents.authorizeAccount".to_owned(),
-                            utils::path::contract_tilde(config_file_path),
-                        )
-                    })?;
+fn parse_oauth2(
+    google_tbl: &Table,
+    config_file_path: &Path,
+    lua: &Lua,
+) -> anyhow::Result<GoogleOAuth2> {
+    let google_oauth2_tbl: Table = google_tbl.get::<Table>("oauth2")?;
 
-                if let Ok(calendar_ids_tbl) = profile_data.get::<Table>("calendarIDs") {
-                    let calendar_ids: Vec<String> = calendar_ids_tbl
-                        .sequence_values()
-                        .filter_map(|v| {
-                            v.ok()
-                                .and_then(|val: mlua::Value| val.as_str().map(|s| s.to_string()))
-                        })
-                        .collect();
+    let client_id: String = google_oauth2_tbl
+        .get::<Option<String>>("clientID")?
+        .ok_or_else(|| {
+            ConfigError::RequiredFieldNotFound(
+                "source.google.oauth2.clientID".to_owned(),
+                utils::path::contract_tilde(config_file_path),
+            )
+        })?;
 
-                    profiles.insert(
-                        profile_name,
-                        ProfileConfig {
-                            calendar_ids,
-                            authorize_account,
-                        },
-                    );
-                }
+    let client_secret: String = google_oauth2_tbl
+        .get::<Option<String>>("clientSecret")?
+        .ok_or_else(|| {
+            ConfigError::RequiredFieldNotFound(
+                "source.google.oauth2.clientSecret".to_owned(),
+                utils::path::contract_tilde(config_file_path),
+            )
+        })?;
+
+    let default_scopes_table = lua.create_table()?;
+    default_scopes_table.push("https://www.googleapis.com/auth/calendar.events")?;
+
+    let scopes: Vec<String> = google_oauth2_tbl
+        .get::<Option<Table>>("scopes")?
+        .unwrap_or(default_scopes_table)
+        .sequence_values()
+        .collect::<Result<_, _>>()?;
+
+    let redirect_url: String = google_oauth2_tbl
+        .get::<Option<String>>("redirectURL")?
+        .unwrap_or("http://127.0.0.1:9004".to_string());
+
+    Ok(GoogleOAuth2 {
+        client_id,
+        client_secret,
+        redirect_url,
+        scopes,
+    })
+}
+
+fn parse_profiles(
+    google_tbl: &Table,
+    config_file_path: &Path,
+) -> anyhow::Result<HashMap<String, ProfileConfig>> {
+    let mut profiles = HashMap::new();
+
+    if let Ok(profile_tbl) = google_tbl.get::<Table>("profile") {
+        for (profile_name, profile_data) in profile_tbl.pairs::<String, Table>().flatten() {
+            let authorize_account: String = profile_data
+                .get::<Option<String>>("authorizeAccount")?
+                .ok_or_else(|| {
+                    ConfigError::RequiredFieldNotFound(
+                        "source.google.calendar.getEvents.authorizeAccount".to_owned(),
+                        utils::path::contract_tilde(config_file_path),
+                    )
+                })?;
+
+            if let Ok(calendar_ids_tbl) = profile_data.get::<Table>("calendarIDs") {
+                let calendar_ids: Vec<String> = calendar_ids_tbl
+                    .sequence_values()
+                    .filter_map(|v| {
+                        v.ok()
+                            .and_then(|val: mlua::Value| val.as_str().map(|s| s.to_string()))
+                    })
+                    .collect();
+
+                profiles.insert(
+                    profile_name,
+                    ProfileConfig {
+                        calendar_ids,
+                        authorize_account,
+                    },
+                );
             }
         }
+    }
 
-        let redirect_url: String = google_oauth2_tbl
-            .get::<Option<String>>("redirectURL")?
-            .unwrap_or("http://127.0.0.1:9004".to_string());
+    Ok(profiles)
+}
 
-        let prompt_tbl = match config_tbl.get::<Table>("prompt") {
-            Ok(tbl) => tbl,
-            Err(_) => {
-                let default_tbl = lua.create_table()?;
-                default_tbl.set("template", crate::config::templates::google::STANDARD)?;
-                default_tbl
-            }
-        };
+fn parse_prompt(config_tbl: &Table, config_file_path: &Path, lua: &Lua) -> anyhow::Result<Prompt> {
+    let prompt_tbl = match config_tbl.get::<Table>("prompt") {
+        Ok(tbl) => tbl,
+        Err(_) => {
+            let default_tbl = lua.create_table()?;
+            default_tbl.set("template", crate::config::templates::google::STANDARD)?;
+            default_tbl
+        }
+    };
 
-        let template: String = prompt_tbl
-            .get::<Option<String>>("template")?
-            .unwrap_or(crate::config::templates::google::STANDARD.to_string());
+    let template: String = prompt_tbl
+        .get::<Option<String>>("template")?
+        .unwrap_or(crate::config::templates::google::STANDARD.to_string());
 
-        let prompt_calendar_ids: Vec<String> = prompt_tbl
-            .get::<Option<Vec<String>>>("calendarIDs")?
-            .ok_or_else(|| {
-                ConfigError::RequiredFieldNotFound(
-                    "prompt.calendarIDs".to_owned(),
-                    utils::path::contract_tilde(config_file_path),
-                )
-            })?;
+    let calendar_ids: Vec<String> = prompt_tbl
+        .get::<Option<Vec<String>>>("calendarIDs")?
+        .ok_or_else(|| {
+            ConfigError::RequiredFieldNotFound(
+                "prompt.calendarIDs".to_owned(),
+                utils::path::contract_tilde(config_file_path),
+            )
+        })?;
 
-        let oauth_default_path = get_oauth_path()?;
-        let settings: Settings = match config_tbl.get::<Option<Table>>("settings") {
-            Ok(settings_tbl) => match settings_tbl {
-                Some(table) => {
-                    let oauth_file_path = table
-                        .get::<Option<String>>("oauthFilePath")?
-                        .unwrap_or(oauth_default_path.to_string_lossy().to_string());
-                    let tz = table
-                        .get::<Option<String>>("TZ")?
-                        .unwrap_or("UTC".to_string());
+    Ok(Prompt {
+        template,
+        calendar_ids,
+    })
+}
 
-                    Settings {
-                        oauth_file_path,
-                        tz,
-                    }
-                }
-                None => Settings {
-                    oauth_file_path: oauth_default_path.to_string_lossy().to_string(),
-                    tz: "UTC".to_string(),
-                },
-            },
-            Err(_) => Settings {
-                oauth_file_path: oauth_default_path.to_string_lossy().to_string(),
-                tz: "UTC".to_string(),
-            },
-        };
+fn parse_settings(config_tbl: &Table) -> anyhow::Result<Settings> {
+    let oauth_default_path = get_oauth_path()?;
 
-        let config = Config {
-            source: Source {
-                google: GoogleSource {
-                    oauth2: GoogleOAuth2 {
-                        client_id: google_oauth2_client_id,
-                        client_secret: google_oauth2_client_secret,
-                        redirect_url,
-                        scopes: google_oauth2_scopes,
-                    },
-                    profile: profiles,
-                },
-            },
-            prompt: Prompt {
-                template,
-                calendar_ids: prompt_calendar_ids,
-            },
-            settings,
-        };
-        Ok(config)
-    } else {
-        Err(ConfigError::RequiredFieldNotFound(
-            "config.lua did not return a table!".to_owned(),
-            utils::path::contract_tilde(config_file_path),
-        )
-        .into())
+    match config_tbl.get::<Option<Table>>("settings") {
+        Ok(Some(table)) => {
+            let oauth_file_path = table
+                .get::<Option<String>>("oauthFilePath")?
+                .unwrap_or(oauth_default_path.to_string_lossy().to_string());
+            let tz = table
+                .get::<Option<String>>("TZ")?
+                .unwrap_or("UTC".to_string());
+
+            Ok(Settings {
+                oauth_file_path,
+                tz,
+            })
+        }
+        _ => Ok(Settings {
+            oauth_file_path: oauth_default_path.to_string_lossy().to_string(),
+            tz: "UTC".to_string(),
+        }),
     }
 }
 
@@ -396,6 +428,19 @@ return M
         };
 
         assert_eq!(config, expected, "Config should match the expected struct");
+        assert_eq!(
+            config.source.google.profile.len(),
+            2,
+            "Should have 2 profiles"
+        );
+        assert!(
+            config.source.google.profile.contains_key("work"),
+            "Should contain 'work' profile"
+        );
+        assert!(
+            config.source.google.profile.contains_key("private"),
+            "Should contain 'private' profile"
+        );
 
         Ok(())
     }
