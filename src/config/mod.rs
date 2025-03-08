@@ -20,7 +20,7 @@ pub struct Config {
 #[derive(Debug, PartialEq, Eq, Clone)]
 pub struct Settings {
     pub tz: String,
-    pub oauth_file_path: String,
+    pub oauth2_path: String,
 }
 
 #[derive(Debug, PartialEq, Eq, Clone)]
@@ -281,20 +281,17 @@ fn parse_settings(config_tbl: &Table) -> anyhow::Result<Settings> {
 
     match config_tbl.get::<Option<Table>>("settings") {
         Ok(Some(table)) => {
-            let oauth_file_path = table
-                .get::<Option<String>>("oauthFilePath")?
+            let oauth2_path = table
+                .get::<Option<String>>("oauth2Path")?
                 .unwrap_or(oauth_default_path.to_string_lossy().to_string());
             let tz = table
                 .get::<Option<String>>("TZ")?
                 .unwrap_or("UTC".to_string());
 
-            Ok(Settings {
-                oauth_file_path,
-                tz,
-            })
+            Ok(Settings { oauth2_path, tz })
         }
         _ => Ok(Settings {
-            oauth_file_path: oauth_default_path.to_string_lossy().to_string(),
+            oauth2_path: oauth_default_path.to_string_lossy().to_string(),
             tz: "UTC".to_string(),
         }),
     }
@@ -383,7 +380,7 @@ return M
         let config = load_config(&config_file_path)?;
 
         let home_dir = env::var("HOME")?;
-        let oauth_file_path = format!("{}/.local/share/cal2prompt/oauth", home_dir);
+        let oauth2_path = format!("{}/.local/share/cal2prompt/oauth2", home_dir);
         let tz = "UTC".to_string();
 
         let mut profiles = HashMap::new();
@@ -421,10 +418,7 @@ return M
                     "private@example.com".to_string(),
                 ],
             },
-            settings: Settings {
-                oauth_file_path,
-                tz,
-            },
+            settings: Settings { oauth2_path, tz },
         };
 
         assert_eq!(config, expected, "Config should match the expected struct");
@@ -510,7 +504,7 @@ return M
         let config = load_config(&config_file_path)?;
 
         let home_dir = env::var("HOME")?;
-        let oauth_file_path = format!("{}/.local/share/cal2prompt/oauth", home_dir);
+        let oauth2_path = format!("{}/.local/share/cal2prompt/oauth2", home_dir);
         let tz = "UTC".to_string();
 
         let expected = Config {
@@ -529,10 +523,7 @@ return M
                 template: crate::config::templates::google::STANDARD.to_string(),
                 calendar_ids: vec!["test@example.com".to_string()],
             },
-            settings: Settings {
-                oauth_file_path,
-                tz,
-            },
+            settings: Settings { oauth2_path, tz },
         };
 
         assert_eq!(config, expected, "Config should match the expected struct");
