@@ -37,9 +37,18 @@ pub enum JsonRpcErrorCode {
     CalendarIdNotFound = -32002,
 }
 
+pub struct ProfileConfig {
+    pub profile_name: String,
+    pub calendar_ids: Vec<String>,
+    pub authorize_account: String,
+    pub token: Option<Token>,
+    pub path: String,
+}
+
+pub type ProfileName = String;
 pub struct Cal2Prompt {
     pub config: Config,
-    pub token: Option<Token>,
+    pub profiles: BTreeMap<ProfileName, ProfileConfig>,
 }
 
 #[derive(Debug, Serialize)]
@@ -72,10 +81,39 @@ pub enum GetEventDuration {
 impl Cal2Prompt {
     pub fn new() -> anyhow::Result<Self> {
         match config::init() {
-            Ok(config) => Ok(Self {
-                config,
-                token: None, // FIXME: set profile and token
-            }),
+            Ok(config) => {
+                let mut profiles = BTreeMap::new();
+                for profile in config.source.google.profile.keys() {
+                    let token_path = format!("{}/{}", config.settings.oauth2_path, profile);
+
+                    profiles.insert(
+                        profile.to_string(),
+                        ProfileConfig {
+                            token: None,
+                            path: token_path,
+                            profile_name: profile.to_string(),
+                            calendar_ids: config
+                                .source
+                                .google
+                                .profile
+                                .get(profile)
+                                .unwrap()
+                                .calendar_ids
+                                .clone(),
+                            authorize_account: config
+                                .source
+                                .google
+                                .profile
+                                .get(profile)
+                                .unwrap()
+                                .authorize_account
+                                .clone(),
+                        },
+                    );
+                }
+
+                Ok(Self { config, profiles })
+            }
             Err(e) => Err(e),
         }
     }
@@ -87,29 +125,26 @@ impl Cal2Prompt {
             &self.config.source.google.oauth2.redirect_url,
         );
 
-        let token_path = match profile {
-            Some(profile) => {
-                format!("{}/{}", self.config.settings.oauth2_path, profile)
-            }
-            None => {
-                let profile = self.config.source.google.profile.keys().next().unwrap();
-                format!("{}/{}", self.config.settings.oauth2_path, profile)
-            }
+        let profile_name = match &profile {
+            Some(p) => p.clone(),
+            None => self.profiles.keys().next().unwrap().clone(),
         };
 
-        let token = match fs::read_to_string(&token_path) {
+        let profile_path = self.profiles.get(&profile_name).unwrap().path.clone();
+
+        let token = match fs::read_to_string(&profile_path) {
             Ok(content) => {
                 let stored = serde_json::from_str::<Token>(&content)?;
 
                 if stored.is_expired() {
                     if let Some(ref refresh) = stored.refresh_token {
                         let refreshed = oauth2_client.refresh_token(refresh.clone()).await?;
-                        self.save_token(&refreshed, profile).await?;
+                        Self::save_token(&refreshed, &profile_path).await?;
                         refreshed
                     } else {
                         match oauth2_client.oauth_flow().await {
                             Ok(token) => {
-                                self.save_token(&token, profile).await?;
+                                Self::save_token(&token, &profile_path).await?;
                                 token
                             }
                             Err(e) => {
@@ -131,7 +166,7 @@ impl Cal2Prompt {
             }
             Err(_) => match oauth2_client.oauth_flow().await {
                 Ok(new_token) => {
-                    self.save_token(&new_token, profile).await?;
+                    Self::save_token(&new_token, &profile_path).await?;
                     new_token
                 }
                 Err(e) => {
@@ -143,13 +178,22 @@ impl Cal2Prompt {
             },
         };
 
-        self.token = Some(token);
+        if let Some(profile_config) = self.profiles.get_mut(&profile_name) {
+            profile_config.token = Some(token);
+        }
 
         Ok(())
     }
 
-    pub async fn ensure_valid_token(&mut self, profile: &str) -> anyhow::Result<()> {
-        if let Some(token) = &self.token {
+    pub async fn ensure_valid_token(&mut self, profile: Option<String>) -> anyhow::Result<()> {
+        let profile_name = match &profile {
+            Some(p) => p.clone(),
+            None => self.profiles.keys().next().unwrap().clone(),
+        };
+
+        let profile_path = self.profiles.get(&profile_name).unwrap().path.clone();
+
+        if let Some(token) = &self.profiles.get(&profile_name).unwrap().token {
             if token.is_expired() {
                 let oauth2_client = OAuth2Client::new(
                     &self.config.source.google.oauth2.client_id,
@@ -159,13 +203,14 @@ impl Cal2Prompt {
 
                 if let Some(ref refresh_token) = token.refresh_token {
                     let refreshed = oauth2_client.refresh_token(refresh_token.clone()).await?;
-                    self.save_token(&refreshed, profile).await?;
-                    self.token = Some(refreshed);
+                    Self::save_token(&refreshed, &profile_path).await?;
+
+                    self.profiles.get_mut(&profile_name).unwrap().token = Some(refreshed);
                 } else {
                     match oauth2_client.oauth_flow().await {
                         Ok(new_token) => {
-                            self.save_token(&new_token, profile).await?;
-                            self.token = Some(new_token);
+                            Self::save_token(&new_token, &profile_path).await?;
+                            self.profiles.get_mut(&profile_name).unwrap().token = Some(new_token);
                         }
                         Err(e) => {
                             if let Some(OAuth2Error::PortInUse) = e.downcast_ref::<OAuth2Error>() {
@@ -195,18 +240,31 @@ impl Cal2Prompt {
         description: Option<String>,
         start: &str,
         end: &str,
+        profile: Option<ProfileName>,
     ) -> anyhow::Result<CreatedEventResponse> {
-        let calendar_service = GoogleCalendarService::new(
-            self.config.clone(),
-            self.token
-                .as_ref()
-                .expect("token not set")
-                .access_token
-                .clone(),
-        );
+        let profile_name = match &profile {
+            Some(p) => p.clone(),
+            None => self.profiles.keys().next().unwrap().clone(),
+        };
+        let profile_config = self.profiles.get(&profile_name).unwrap();
+        let calendar_service = GoogleCalendarService::new();
+        let tz: Tz =
+            self.config.settings.tz.parse().unwrap_or_else(|_| {
+                panic!("Invalid time zone string '{}'", self.config.settings.tz)
+            });
+
+        let calendar_id = profile_config.calendar_ids.first().unwrap(); // FIXME mapping calndarName and calnderId
 
         calendar_service
-            .create_calendar_event(summary, description, start, end)
+            .create_calendar_event(
+                summary,
+                description,
+                start,
+                end,
+                &tz,
+                calendar_id,
+                &profile_config.token.as_ref().unwrap().access_token,
+            )
             .await
     }
 
@@ -214,12 +272,18 @@ impl Cal2Prompt {
         &self,
         since: &str,
         until: &str,
-        profile: Option<&str>,
+        profile: Option<ProfileName>,
     ) -> anyhow::Result<Vec<Day>> {
         let tz: Tz =
             self.config.settings.tz.parse().unwrap_or_else(|_| {
                 panic!("Invalid time zone string '{}'", self.config.settings.tz)
             });
+
+        let profile_name = match &profile {
+            Some(p) => p.clone(),
+            None => self.profiles.keys().next().unwrap().clone(),
+        };
+        let profile_config = self.profiles.get(&profile_name).unwrap();
 
         let since_naive_date = NaiveDate::parse_from_str(since, "%Y-%m-%d")?
             .and_hms_opt(0, 0, 0)
@@ -230,24 +294,22 @@ impl Cal2Prompt {
         let since_with_tz = tz.from_local_datetime(&since_naive_date).unwrap();
         let until_with_tz = tz.from_local_datetime(&until_naive_date).unwrap();
 
-        let calendar_service = GoogleCalendarService::new(
-            self.config.clone(),
-            self.token
-                .as_ref()
-                .expect("token not set")
-                .access_token
-                .clone(),
-        );
-
+        let calendar_service = GoogleCalendarService::new();
         let all_events = calendar_service
-            .get_calendar_events_for_profile(since, until, profile)
+            .get_calendar_events(
+                since,
+                until,
+                &tz,
+                &profile_config.calendar_ids,
+                &profile_config.token.as_ref().unwrap().access_token,
+            )
             .await?;
 
         Ok(Self::group_events_into_days(
             all_events,
             since_with_tz,
             until_with_tz,
-            tz,
+            tz.clone(),
         ))
     }
 
@@ -359,21 +421,10 @@ impl Cal2Prompt {
     }
 
     #[allow(dead_code)]
-    pub async fn get_events_duration(
-        self,
-        since: String,
-        until: String,
-        profile: Option<&str>,
-    ) -> anyhow::Result<String> {
-        let days = self.fetch_days(&since, &until, profile).await?;
-        self.render_days(days)
-    }
-
-    #[allow(dead_code)]
     pub async fn get_events_short_cut(
         self,
         get_event_duration: GetEventDuration,
-        profile: Option<&str>,
+        profile: Option<ProfileName>,
     ) -> anyhow::Result<String> {
         let tz: Tz =
             self.config.settings.tz.parse().unwrap_or_else(|_| {
@@ -393,7 +444,7 @@ impl Cal2Prompt {
     pub async fn fetch_duration(
         &self,
         get_event_duration: GetEventDuration,
-        profile: Option<&str>,
+        profile: Option<ProfileName>,
     ) -> anyhow::Result<String> {
         let tz: Tz =
             self.config.settings.tz.parse().unwrap_or_else(|_| {
@@ -414,15 +465,15 @@ impl Cal2Prompt {
         generate(&self.config.prompt.template, days)
     }
 
-    async fn save_token(&self, token: &Token, profile: &str) -> anyhow::Result<()> {
+    async fn save_token(token: &Token, token_file_path: &str) -> anyhow::Result<()> {
         let text = serde_json::to_string_pretty(&token)?;
-        let token_path = format!("{}/{}", self.config.settings.oauth2_path, profile);
         fs::create_dir_all(
-            Path::new(&token_path)
+            Path::new(token_file_path)
                 .parent()
-                .expect("Failed to get token dir"),
+                .expect("Failed to get token path"),
         )?;
-        fs::write(&token_path, text)?;
+
+        fs::write(token_file_path, text)?;
         Ok(())
     }
 }

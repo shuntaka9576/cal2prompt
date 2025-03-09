@@ -116,7 +116,7 @@ async fn main() {
             match fetch_mode {
                 FetchMode::Shortcut(duration) => {
                     match cal2prompt
-                        .fetch_duration(duration, cli.profile.as_deref())
+                        .fetch_duration(duration, cli.profile.clone())
                         .await
                     {
                         Ok(output) => {
@@ -130,7 +130,7 @@ async fn main() {
                 }
                 FetchMode::Range(since, until) => {
                     match cal2prompt
-                        .fetch_days(&since, &until, cli.profile.as_deref())
+                        .fetch_days(&since, &until, cli.profile.clone())
                         .await
                     {
                         Ok(days) => match cal2prompt.render_days(days) {
@@ -165,7 +165,7 @@ async fn init_cal2prompt() -> anyhow::Result<Cal2Prompt> {
         .collect();
 
     for name in profiles {
-        if let Err(e) = cal2prompt.oauth(&name).await {
+        if let Err(e) = cal2prompt.oauth(Some(name)).await {
             eprintln!("{}", e);
             std::process::exit(1);
         }

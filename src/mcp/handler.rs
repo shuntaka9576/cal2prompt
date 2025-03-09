@@ -159,8 +159,20 @@ impl<'a> McpHandler<'a> {
         id: u64,
         profile: Option<String>,
     ) -> Result<(), anyhow::Result<()>> {
-        if self.cal2prompt.token.is_none() {
-            if let Err(err) = self.cal2prompt.oauth(profile).await {
+        let profile_name = match &profile {
+            Some(p) => p.clone(),
+            None => self.cal2prompt.profiles.keys().next().unwrap().clone(),
+        };
+
+        if self
+            .cal2prompt
+            .profiles
+            .get(&profile_name)
+            .unwrap()
+            .token
+            .is_none()
+        {
+            if let Err(err) = self.cal2prompt.oauth(profile.clone()).await {
                 if let Some(Cal2PromptError::OAuth2PortInUse(_)) =
                     err.downcast_ref::<Cal2PromptError>()
                 {
@@ -184,7 +196,7 @@ impl<'a> McpHandler<'a> {
             }
         }
 
-        if let Err(err) = self.cal2prompt.ensure_valid_token(profile).await {
+        if let Err(err) = self.cal2prompt.ensure_valid_token(profile.clone()).await {
             if let Some(Cal2PromptError::OAuth2PortInUse(_)) = err.downcast_ref::<Cal2PromptError>()
             {
                 return Err(self.send_error_response(
@@ -334,7 +346,7 @@ impl<'a> McpHandler<'a> {
 
         match self
             .cal2prompt
-            .fetch_days(since_str, until_str, profile)
+            .fetch_days(since_str, until_str, profile.map(|p| p.to_string()))
             .await
         {
             Ok(days) => {
@@ -378,10 +390,14 @@ impl<'a> McpHandler<'a> {
             .pointer("/arguments/end")
             .and_then(Value::as_str)
             .unwrap_or("");
+        let profile: Option<String> = params_val
+            .pointer("/arguments/profile")
+            .and_then(|v| v.as_str())
+            .map(ToString::to_string);
 
         match self
             .cal2prompt
-            .insert_event(summary_str, description_str, start_str, end_str)
+            .insert_event(summary_str, description_str, start_str, end_str, profile)
             .await
         {
             Ok(res) => {

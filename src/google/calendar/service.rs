@@ -2,7 +2,6 @@ use chrono::{Days, NaiveDate, NaiveDateTime, TimeZone};
 use chrono_tz::Tz;
 use futures::future;
 
-use crate::config::Config;
 use crate::google::calendar::client::GoogleCalendarClient;
 use crate::google::calendar::model::{
     CreatedEventResponse, EventDateTime, EventItem, InsertEventRequest,
@@ -18,17 +17,14 @@ pub enum CalendarServiceError {
 }
 
 pub struct GoogleCalendarService {
-    config: Config,
     calendar_client: GoogleCalendarClient,
 }
 
 impl GoogleCalendarService {
-    pub fn new(config: Config, access_token: String) -> Self {
-        let calendar_client = GoogleCalendarClient::new(access_token);
-        Self {
-            config,
-            calendar_client,
-        }
+    pub fn new() -> Self {
+        let calendar_client = GoogleCalendarClient::new();
+
+        Self { calendar_client }
     }
 
     pub async fn create_calendar_event(
@@ -37,12 +33,10 @@ impl GoogleCalendarService {
         description: Option<String>,
         start: &str,
         end: &str,
+        tz: &Tz,
+        calendar_id: &str,
+        token: &str,
     ) -> anyhow::Result<CreatedEventResponse> {
-        let tz: Tz =
-            self.config.settings.tz.parse().unwrap_or_else(|_| {
-                panic!("Invalid time zone string '{}'", self.config.settings.tz)
-            });
-
         let start_naive_date = NaiveDateTime::parse_from_str(start, "%Y-%m-%d %H:%M")?;
         let end_naive_date = NaiveDateTime::parse_from_str(end, "%Y-%m-%d %H:%M")?;
 
@@ -52,33 +46,21 @@ impl GoogleCalendarService {
         let start_rfc3339 = start_with_tz.to_rfc3339();
         let end_rfc3339 = end_with_tz.to_rfc3339();
 
-        let Some(calendar_id) = &self
-            .config
-            .source
-            .google
-            .profile
-            .get("default") // FIXME: get profile from config
-            .unwrap()
-            .calendar_ids
-            .first()
-        else {
-            return Err(CalendarServiceError::NoCalendarId.into());
-        };
-
         let res = self
             .calendar_client
             .create_calendar_event(
+                token,
                 calendar_id,
                 &InsertEventRequest {
                     summary: summary.to_string(),
                     start: EventDateTime {
                         date_time: Some(start_rfc3339),
-                        time_zone: Some("Asia/Tokyo".to_string()),
+                        time_zone: Some(tz.to_string()),
                         date: None,
                     },
                     end: EventDateTime {
                         date_time: Some(end_rfc3339),
-                        time_zone: Some("Asia/Tokyo".to_string()),
+                        time_zone: Some(tz.to_string()),
                         date: None,
                     },
                     location: None,
@@ -91,27 +73,23 @@ impl GoogleCalendarService {
         Ok(res)
     }
 
-    #[allow(dead_code)]
+    // #[allow(dead_code)]
+    // pub async fn get_calendar_events(
+    //     &self,
+    //     since: &str,
+    //     until: &str,
+    // ) -> anyhow::Result<Vec<EventItem>> {
+    //     self.get_calendar_events(since, until, None).await
+    // }
+
     pub async fn get_calendar_events(
         &self,
         since: &str,
         until: &str,
+        tz: &Tz,
+        calendar_ids: &[String],
+        token: &String,
     ) -> anyhow::Result<Vec<EventItem>> {
-        self.get_calendar_events_for_profile(since, until, None)
-            .await
-    }
-
-    pub async fn get_calendar_events_for_profile(
-        &self,
-        since: &str,
-        until: &str,
-        profile_name: Option<&str>,
-    ) -> anyhow::Result<Vec<EventItem>> {
-        let tz: Tz =
-            self.config.settings.tz.parse().unwrap_or_else(|_| {
-                panic!("Invalid time zone string '{}'", self.config.settings.tz)
-            });
-
         let since_naive_date = NaiveDate::parse_from_str(since, "%Y-%m-%d")?
             .and_hms_opt(0, 0, 0)
             .unwrap();
@@ -126,40 +104,14 @@ impl GoogleCalendarService {
         let until_rfc3339 = to_utc_start_of_start_rfc3339(until_plus_one);
 
         let mut fetch_futures = Vec::new();
-        let mut used_calendar_ids = Vec::new();
-
-        if let Some(profile) = profile_name {
-            if let Some(profile_config) = self.config.source.google.profile.get(profile) {
-                for calendar_id in &profile_config.calendar_ids {
-                    let fut = self.calendar_client.fetch_calendar_events(
-                        calendar_id,
-                        &since_rfc3339,
-                        &until_rfc3339,
-                    );
-                    fetch_futures.push(fut);
-                    used_calendar_ids.push(calendar_id.clone());
-                }
-            } else {
-                return Err(CalendarServiceError::ProfileNotFound(profile.to_string()).into());
-            }
-        } else {
-            for calendar_id in &self
-                .config
-                .source
-                .google
-                .profile
-                .get("work")
-                .unwrap()
-                .calendar_ids
-            {
-                let fut = self.calendar_client.fetch_calendar_events(
-                    calendar_id,
-                    &since_rfc3339,
-                    &until_rfc3339,
-                );
-                fetch_futures.push(fut);
-                used_calendar_ids.push(calendar_id.clone());
-            }
+        for calendar_id in calendar_ids {
+            let fut = self.calendar_client.fetch_calendar_events(
+                calendar_id,
+                &since_rfc3339,
+                &until_rfc3339,
+                token,
+            );
+            fetch_futures.push(fut);
         }
 
         let results = future::join_all(fetch_futures).await;
@@ -173,12 +125,58 @@ impl GoogleCalendarService {
                 Err(e) => {
                     eprintln!(
                         "Error fetching events from calendar_id={}: {}",
-                        &used_calendar_ids[i], e
+                        &calendar_ids[i], e
                     );
                 }
             }
         }
 
         Ok(all_events)
+        // if let Some(profile_config) = self.config.source.google.profile.get(profile) {
+        //     for calendar_id in &profile_config.calendar_ids {
+        //         let fut = self.calendar_client.fetch_calendar_events(
+        //             calendar_id,
+        //             &since_rfc3339,
+        //             &until_rfc3339,
+        //         );
+        //         fetch_futures.push(fut);
+        //         used_calendar_ids.push(calendar_id.clone());
+        //     }
+        // } else {
+        //     for calendar_id in &self
+        //         .config
+        //         .source
+        //         .google
+        //         .profile
+        //         .get("work")
+        //         .unwrap()
+        //         .calendar_ids
+        //     {
+        //         let fut = self.calendar_client.fetch_calendar_events(
+        //             calendar_id,
+        //             &since_rfc3339,
+        //             &until_rfc3339,
+        //         );
+        //         fetch_futures.push(fut);
+        //         used_calendar_ids.push(calendar_id.clone());
+        //     }
+        // }
+
+        // let results = future::join_all(fetch_futures).await;
+
+        // let mut all_events: Vec<EventItem> = Vec::new();
+        // for (i, result) in results.into_iter().enumerate() {
+        //     match result {
+        //         Ok(mut res) => {
+        //             all_events.append(&mut res.items);
+        //         }
+        //         Err(e) => {
+        //             eprintln!(
+        //                 "Error fetching events from calendar_id={}: {}",
+        //                 &used_calendar_ids[i], e
+        //             );
+        //         }
+        //     }
+        // }
     }
 }

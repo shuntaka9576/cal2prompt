@@ -380,7 +380,7 @@ return M
         let config = load_config(&config_file_path)?;
 
         let home_dir = env::var("HOME")?;
-        let oauth2_path = format!("{}/.local/share/cal2prompt/oauth2", home_dir);
+        let oauth2_path = format!("{}/.local/share/cal2prompt/oauth", home_dir);
         let tz = "UTC".to_string();
 
         let mut profiles = HashMap::new();
@@ -504,7 +504,7 @@ return M
         let config = load_config(&config_file_path)?;
 
         let home_dir = env::var("HOME")?;
-        let oauth2_path = format!("{}/.local/share/cal2prompt/oauth2", home_dir);
+        let oauth2_path = format!("{}/.local/share/cal2prompt/oauth", home_dir);
         let tz = "UTC".to_string();
 
         let expected = Config {
