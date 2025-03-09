@@ -12,15 +12,14 @@ use std::{
 #[derive(Debug, PartialEq, Eq, Clone)]
 pub struct Config {
     pub source: Source,
-    pub output: Output,
+    pub prompt: Prompt,
     pub settings: Settings,
-    pub experimental: Experimental,
 }
 
 #[derive(Debug, PartialEq, Eq, Clone)]
 pub struct Settings {
     pub tz: String,
-    pub oauth_file_path: String,
+    pub oauth2_path: String,
 }
 
 #[derive(Debug, PartialEq, Eq, Clone)]
@@ -29,14 +28,15 @@ pub struct Source {
 }
 
 #[derive(Debug, PartialEq, Eq, Clone)]
-pub struct Output {
+pub struct Prompt {
     pub template: String,
+    pub calendar_ids: Vec<String>,
 }
 
 #[derive(Debug, PartialEq, Eq, Clone)]
 pub struct GoogleSource {
     pub oauth2: GoogleOAuth2,
-    pub calendar: GoogleCalendar,
+    pub accounts: Vec<AccountConfig>,
 }
 
 #[derive(Debug, PartialEq, Eq, Clone)]
@@ -48,28 +48,10 @@ pub struct GoogleOAuth2 {
 }
 
 #[derive(Debug, PartialEq, Eq, Clone)]
-pub struct GoogleCalendar {
-    pub get_events: GoogleCalendarGetEvents,
-}
-
-#[derive(Debug, PartialEq, Eq, Clone)]
-pub struct GoogleCalendarGetEvents {
+pub struct AccountConfig {
+    pub name: String,
     pub calendar_ids: Vec<String>,
-}
-
-#[derive(Debug, PartialEq, Eq, Clone)]
-pub struct Experimental {
-    pub mcp: Mcp,
-}
-
-#[derive(Debug, PartialEq, Eq, Clone)]
-pub struct Mcp {
-    pub insert_calendar_event: InsertCalendarEvent,
-}
-
-#[derive(Debug, PartialEq, Eq, Clone)]
-pub struct InsertCalendarEvent {
-    pub calendar_id: Option<String>,
+    pub authorize_account: String,
 }
 
 pub fn init() -> anyhow::Result<Config> {
@@ -112,7 +94,31 @@ fn get_oauth_path() -> anyhow::Result<PathBuf> {
 
 fn load_config(config_file_path: &Path) -> anyhow::Result<Config> {
     let lua = Lua::new();
+    setup_lua_environment(&lua, config_file_path)?;
 
+    let config_code = fs::read_to_string(config_file_path.to_string_lossy().to_string())?;
+    let config_eval = lua.load(&config_code).eval()?;
+
+    if let Value::Table(config_tbl) = config_eval {
+        let source = parse_source(&config_tbl, config_file_path, &lua)?;
+        let prompt = parse_prompt(&config_tbl, config_file_path, &lua)?;
+        let settings = parse_settings(&config_tbl)?;
+
+        Ok(Config {
+            source,
+            prompt,
+            settings,
+        })
+    } else {
+        Err(ConfigError::RequiredFieldNotFound(
+            "config.lua did not return a table!".to_owned(),
+            utils::path::contract_tilde(config_file_path),
+        )
+        .into())
+    }
+}
+
+fn setup_lua_environment(lua: &Lua, config_file_path: &Path) -> anyhow::Result<()> {
     let config_path = config_file_path
         .parent()
         .unwrap_or_else(|| Path::new(""))
@@ -140,138 +146,161 @@ fn load_config(config_file_path: &Path) -> anyhow::Result<Config> {
 
     loaded.set("cal2prompt", cal2prompt_mod)?;
 
-    let config_code = fs::read_to_string(config_file_path.to_string_lossy().to_string())?;
-    let config_eval = lua.load(&config_code).eval()?;
+    Ok(())
+}
 
-    if let Value::Table(config_tbl) = config_eval {
-        let source_tbl: Table = config_tbl.get::<Table>("source")?;
-        let google_tbl: Table = source_tbl.get::<Table>("google")?;
-        let google_oauth2_tbl: Table = google_tbl.get::<Table>("oauth2")?;
-        let google_oauth2_client_id: String = google_oauth2_tbl
-            .get::<Option<String>>("clientID")?
-            .ok_or_else(|| {
-                ConfigError::RequiredFieldNotFound(
-                    "source.google.oauth2.clientID".to_owned(),
-                    utils::path::contract_tilde(config_file_path),
-                )
-            })?;
-        let google_oauth2_client_secret: String = google_oauth2_tbl
-            .get::<Option<String>>("clientSecret")?
-            .ok_or_else(|| {
-                ConfigError::RequiredFieldNotFound(
-                    "source.google.oauth2.clientSecret".to_owned(),
-                    utils::path::contract_tilde(config_file_path),
-                )
-            })?;
+fn parse_source(config_tbl: &Table, config_file_path: &Path, lua: &Lua) -> anyhow::Result<Source> {
+    let source_tbl: Table = config_tbl.get::<Table>("source")?;
+    let google_tbl: Table = source_tbl.get::<Table>("google")?;
 
-        let default_scopes_table = lua.create_table()?;
-        default_scopes_table.push("https://www.googleapis.com/auth/calendar.events")?;
+    let oauth2 = parse_oauth2(&google_tbl, config_file_path, lua)?;
+    let accounts = parse_accounts(&google_tbl, config_file_path)?;
 
-        let google_oauth2_scopes: Vec<String> = google_oauth2_tbl
-            .get::<Option<Table>>("scopes")?
-            .unwrap_or(default_scopes_table)
-            .sequence_values()
-            .collect::<Result<_, _>>()?;
+    Ok(Source {
+        google: GoogleSource { oauth2, accounts },
+    })
+}
 
-        let google_calendar_tbl: Table = google_tbl.get::<Table>("calendar")?;
-        let google_get_events_tbl: Table = google_calendar_tbl.get::<Table>("getEvents")?;
-        let calendar_ids_table: Table = google_get_events_tbl.get::<Table>("calendarIDs")?;
-        let calendar_ids: Vec<String> = calendar_ids_table
-            .sequence_values()
-            .collect::<Result<_, _>>()?;
+fn parse_oauth2(
+    google_tbl: &Table,
+    config_file_path: &Path,
+    lua: &Lua,
+) -> anyhow::Result<GoogleOAuth2> {
+    let google_oauth2_tbl: Table = google_tbl.get::<Table>("oauth2")?;
 
-        let redirect_url: String = google_oauth2_tbl
-            .get::<Option<String>>("redirectURL")?
-            .unwrap_or("http://127.0.0.1:9004".to_string());
+    let client_id: String = google_oauth2_tbl
+        .get::<Option<String>>("clientID")?
+        .ok_or_else(|| {
+            ConfigError::RequiredFieldNotFound(
+                "source.google.oauth2.clientID".to_owned(),
+                utils::path::contract_tilde(config_file_path),
+            )
+        })?;
 
-        let output_tbl: Table = config_tbl.get::<Table>("output")?;
-        let template: String = output_tbl
-            .get::<Option<String>>("template")?
-            .ok_or_else(|| {
-                ConfigError::RequiredFieldNotFound(
-                    "template not found".to_owned(),
-                    utils::path::contract_tilde(config_file_path),
-                )
-            })?;
+    let client_secret: String = google_oauth2_tbl
+        .get::<Option<String>>("clientSecret")?
+        .ok_or_else(|| {
+            ConfigError::RequiredFieldNotFound(
+                "source.google.oauth2.clientSecret".to_owned(),
+                utils::path::contract_tilde(config_file_path),
+            )
+        })?;
 
-        let oauth_default_path = get_oauth_path()?;
-        let settings: Settings = match config_tbl.get::<Option<Table>>("settings") {
-            Ok(settings_tbl) => match settings_tbl {
-                Some(table) => {
-                    let oauth_file_path = table
-                        .get::<Option<String>>("oauthFilePath")?
-                        .unwrap_or(oauth_default_path.to_string_lossy().to_string());
-                    let tz = table
-                        .get::<Option<String>>("TZ")?
-                        .unwrap_or("UTC".to_string());
+    let default_scopes_table = lua.create_table()?;
+    default_scopes_table.push("https://www.googleapis.com/auth/calendar.events")?;
 
-                    Settings {
-                        oauth_file_path,
-                        tz,
-                    }
-                }
-                None => Settings {
-                    oauth_file_path: oauth_default_path.to_string_lossy().to_string(),
-                    tz: "UTC".to_string(),
-                },
-            },
-            Err(_) => Settings {
-                oauth_file_path: oauth_default_path.to_string_lossy().to_string(),
-                tz: "UTC".to_string(),
-            },
-        };
+    let scopes: Vec<String> = google_oauth2_tbl
+        .get::<Option<Table>>("scopes")?
+        .unwrap_or(default_scopes_table)
+        .sequence_values()
+        .collect::<Result<_, _>>()?;
 
-        let experimental_tbl = match config_tbl.get::<Option<Table>>("experimental") {
-            Ok(experimental_tbl) => experimental_tbl,
-            Err(_) => Some(lua.create_table().expect("failed to create table")),
+    let redirect_url: String = google_oauth2_tbl
+        .get::<Option<String>>("redirectURL")?
+        .unwrap_or("http://127.0.0.1:9004".to_string());
+
+    Ok(GoogleOAuth2 {
+        client_id,
+        client_secret,
+        redirect_url,
+        scopes,
+    })
+}
+
+fn parse_accounts(
+    google_tbl: &Table,
+    config_file_path: &Path,
+) -> anyhow::Result<Vec<AccountConfig>> {
+    let mut accounts = Vec::new();
+
+    if let Ok(accounts_tbl) = google_tbl.get::<Table>("accounts") {
+        for account_value in accounts_tbl.sequence_values::<Table>().flatten() {
+            let name = account_value
+                .get::<Option<String>>("name")?
+                .ok_or_else(|| {
+                    ConfigError::RequiredFieldNotFound(
+                        "source.google.accounts[].name".to_owned(),
+                        utils::path::contract_tilde(config_file_path),
+                    )
+                })?;
+
+            let authorize_account = account_value
+                .get::<Option<String>>("authorizeAccount")?
+                .ok_or_else(|| {
+                    ConfigError::RequiredFieldNotFound(
+                        "source.google.accounts[].authorizeAccount".to_owned(),
+                        utils::path::contract_tilde(config_file_path),
+                    )
+                })?;
+
+            if let Ok(calendar_ids_tbl) = account_value.get::<Table>("calendarIDs") {
+                let calendar_ids: Vec<String> = calendar_ids_tbl
+                    .sequence_values()
+                    .filter_map(|v| {
+                        v.ok()
+                            .and_then(|val: mlua::Value| val.as_str().map(|s| s.to_string()))
+                    })
+                    .collect();
+
+                accounts.push(AccountConfig {
+                    name,
+                    calendar_ids,
+                    authorize_account,
+                });
+            }
         }
-        .unwrap_or_else(|| lua.create_table().expect("failed to create table"));
+    }
 
-        let mcp_tbl = match experimental_tbl.get::<Option<Table>>("mcp") {
-            Ok(mcp_tbl) => mcp_tbl,
-            Err(_) => Some(lua.create_table().expect("failed to create table")),
+    Ok(accounts)
+}
+
+fn parse_prompt(config_tbl: &Table, config_file_path: &Path, lua: &Lua) -> anyhow::Result<Prompt> {
+    let prompt_tbl = match config_tbl.get::<Table>("prompt") {
+        Ok(tbl) => tbl,
+        Err(_) => {
+            let default_tbl = lua.create_table()?;
+            default_tbl.set("template", crate::config::templates::google::STANDARD)?;
+            default_tbl
         }
-        .unwrap_or_else(|| lua.create_table().expect("failed to create table"));
+    };
 
-        let insert_tbl = match mcp_tbl.get::<Option<Table>>("insertCalendarEvent") {
-            Ok(insert_tbl) => insert_tbl,
-            Err(_) => Some(lua.create_table().expect("failed to create table")),
+    let template: String = prompt_tbl
+        .get::<Option<String>>("template")?
+        .unwrap_or(crate::config::templates::google::STANDARD.to_string());
+
+    let calendar_ids: Vec<String> = prompt_tbl
+        .get::<Option<Vec<String>>>("calendarIDs")?
+        .ok_or_else(|| {
+            ConfigError::RequiredFieldNotFound(
+                "prompt.calendarIDs".to_owned(),
+                utils::path::contract_tilde(config_file_path),
+            )
+        })?;
+
+    Ok(Prompt {
+        template,
+        calendar_ids,
+    })
+}
+
+fn parse_settings(config_tbl: &Table) -> anyhow::Result<Settings> {
+    let oauth_default_path = get_oauth_path()?;
+
+    match config_tbl.get::<Option<Table>>("settings") {
+        Ok(Some(table)) => {
+            let oauth2_path = table
+                .get::<Option<String>>("oauth2Path")?
+                .unwrap_or(oauth_default_path.to_string_lossy().to_string());
+            let tz = table
+                .get::<Option<String>>("TZ")?
+                .unwrap_or("UTC".to_string());
+
+            Ok(Settings { oauth2_path, tz })
         }
-        .unwrap_or_else(|| lua.create_table().expect("failed to create table"));
-
-        let calendar_id = insert_tbl.get::<Option<String>>("calendarID")?;
-
-        let experimental = Experimental {
-            mcp: Mcp {
-                insert_calendar_event: InsertCalendarEvent { calendar_id },
-            },
-        };
-
-        let config = Config {
-            source: Source {
-                google: GoogleSource {
-                    oauth2: GoogleOAuth2 {
-                        client_id: google_oauth2_client_id,
-                        client_secret: google_oauth2_client_secret,
-                        redirect_url,
-                        scopes: google_oauth2_scopes,
-                    },
-                    calendar: GoogleCalendar {
-                        get_events: GoogleCalendarGetEvents { calendar_ids },
-                    },
-                },
-            },
-            output: Output { template },
-            settings,
-            experimental,
-        };
-        Ok(config)
-    } else {
-        Err(ConfigError::RequiredFieldNotFound(
-            "config.lua did not return a table!".to_owned(),
-            utils::path::contract_tilde(config_file_path),
-        )
-        .into())
+        _ => Ok(Settings {
+            oauth2_path: oauth_default_path.to_string_lossy().to_string(),
+            tz: "UTC".to_string(),
+        }),
     }
 }
 
@@ -296,26 +325,30 @@ return {
   source = {
     google = {
       oauth2 = {
-        clientID = secrets.googleOAuth2Client.clientID,
-        clientSecret = secrets.googleOAuth2Client.clientSecret,
+        clientID = secrets.google.oauth2.clientID,
+        clientSecret = secrets.google.oauth2.clientSecret,
         redirectURL = "http://127.0.0.1:9004",
       },
-      calendar = {
-        getEvents = {
-          calendarIDs = { "test@example.com" }
+      accounts = {
+        {
+          name = "work",
+          calendarIDs = { "test@example.com" },
+          authorizeAccount = "test@example.com"
+        },
+        {
+          name = "private",
+          calendarIDs = { "private@example.com" },
+          authorizeAccount = "private@example.com"
         }
       }
     },
   },
-  experimental = {
-    mcp = {
-        insertCalendarEvent = {
-          calendarID = "test@example.com"
-        }
-    }
-  },
-  output = {
-    template = cal2prompt.template.google.standard
+  prompt = {
+    template = cal2prompt.template.google.standard,
+    calendarIDs = {
+      "test@example.com",
+      "private@example.com",
+    },
   }
 }
 "#;
@@ -324,9 +357,29 @@ return {
         let secrets_code = r#"
 local M = {}
 
-M.googleOAuth2Client = {
-  clientID = "test_client_id",
-  clientSecret = "test_client_secret",
+M.google = {
+  oauth2 = {
+    clientID = "test_client_id",
+    clientSecret = "test_client_secret",
+  },
+  work = {
+    authorizeAccount = "test@example.com",
+    calendarIDs = {
+      "test@example.com",
+    },
+  },
+  private = {
+    authorizeAccount = "private@example.com",
+    calendarIDs = {
+      "private@example.com",
+    },
+  },
+  prompt = {
+    calendarIDs = {
+      "test@example.com",
+      "private@example.com",
+    },
+  }
 }
 
 return M
@@ -336,9 +389,21 @@ return M
         let config = load_config(&config_file_path)?;
 
         let home_dir = env::var("HOME")?;
-        let oauth_file_path = format!("{}/.local/share/cal2prompt/oauth", home_dir);
+        let oauth2_path = format!("{}/.local/share/cal2prompt/oauth", home_dir);
         let tz = "UTC".to_string();
-        let calendar_ids = vec!["test@example.com".to_string()];
+
+        let accounts = vec![
+            AccountConfig {
+                name: "work".to_string(),
+                calendar_ids: vec!["test@example.com".to_string()],
+                authorize_account: "test@example.com".to_string(),
+            },
+            AccountConfig {
+                name: "private".to_string(),
+                calendar_ids: vec!["private@example.com".to_string()],
+                authorize_account: "private@example.com".to_string(),
+            },
+        ];
 
         let expected = Config {
             source: Source {
@@ -349,28 +414,41 @@ return M
                         redirect_url: "http://127.0.0.1:9004".to_string(),
                         scopes: vec!["https://www.googleapis.com/auth/calendar.events".to_string()],
                     },
-                    calendar: GoogleCalendar {
-                        get_events: GoogleCalendarGetEvents { calendar_ids },
-                    },
+                    accounts,
                 },
             },
-            output: Output {
+            prompt: Prompt {
                 template: crate::config::templates::google::STANDARD.to_string(),
+                calendar_ids: vec![
+                    "test@example.com".to_string(),
+                    "private@example.com".to_string(),
+                ],
             },
-            settings: Settings {
-                oauth_file_path,
-                tz,
-            },
-            experimental: Experimental {
-                mcp: Mcp {
-                    insert_calendar_event: InsertCalendarEvent {
-                        calendar_id: Some("test@example.com".to_string()),
-                    },
-                },
-            },
+            settings: Settings { oauth2_path, tz },
         };
 
         assert_eq!(config, expected, "Config should match the expected struct");
+        assert_eq!(
+            config.source.google.accounts.len(),
+            2,
+            "Should have 2 accounts"
+        );
+        assert!(
+            config.source.google.accounts.contains(&AccountConfig {
+                name: "work".to_string(),
+                calendar_ids: vec!["test@example.com".to_string()],
+                authorize_account: "test@example.com".to_string(),
+            }),
+            "Should contain 'work' account"
+        );
+        assert!(
+            config.source.google.accounts.contains(&AccountConfig {
+                name: "private".to_string(),
+                calendar_ids: vec!["private@example.com".to_string()],
+                authorize_account: "private@example.com".to_string(),
+            }),
+            "Should contain 'private' account"
+        );
 
         Ok(())
     }
@@ -391,18 +469,27 @@ return {
   source = {
     google = {
       oauth2 = {
-        clientID = secrets.googleOAuth2Client.clientID,
-        clientSecret = secrets.googleOAuth2Client.clientSecret,
+        clientID = secrets.google.oauth2.clientID,
+        clientSecret = secrets.google.oauth2.clientSecret,
       },
-      calendar = {
-        getEvents = {
-          calendarIDs = { "test@example.com" }
+      accounts = {
+        {
+          name = "work",
+          calendarIDs = { "test@example.com" },
+          authorizeAccount = "test@example.com"
+        },
+        {
+          name = "private",
+          calendarIDs = { "private@example.com" },
+          authorizeAccount = "private@example.com"
         }
       }
     },
   },
-  output = {
-    template = cal2prompt.template.google.standard
+  prompt = {
+    calendarIDs = {
+      "test@example.com",
+    },
   }
 }
 "#;
@@ -411,9 +498,23 @@ return {
         let secrets_code = r#"
 local M = {}
 
-M.googleOAuth2Client = {
-  clientID = "test_client_id",
-  clientSecret = "test_client_secret",
+M.google = {
+  oauth2 = {
+    clientID = "test_client_id",
+    clientSecret = "test_client_secret",
+  },
+  work = {
+    authorizeAccount = "test@example.com",
+    calendarIDs = {
+      "test@example.com",
+    },
+  },
+  private = {
+    authorizeAccount = "private@example.com",
+    calendarIDs = {
+      "private@example.com",
+    },
+  },
 }
 
 return M
@@ -423,9 +524,21 @@ return M
         let config = load_config(&config_file_path)?;
 
         let home_dir = env::var("HOME")?;
-        let oauth_file_path = format!("{}/.local/share/cal2prompt/oauth", home_dir);
+        let oauth2_path = format!("{}/.local/share/cal2prompt/oauth", home_dir);
         let tz = "UTC".to_string();
-        let calendar_ids = vec!["test@example.com".to_string()];
+
+        let accounts = vec![
+            AccountConfig {
+                name: "work".to_string(),
+                calendar_ids: vec!["test@example.com".to_string()],
+                authorize_account: "test@example.com".to_string(),
+            },
+            AccountConfig {
+                name: "private".to_string(),
+                calendar_ids: vec!["private@example.com".to_string()],
+                authorize_account: "private@example.com".to_string(),
+            },
+        ];
 
         let expected = Config {
             source: Source {
@@ -436,23 +549,14 @@ return M
                         redirect_url: "http://127.0.0.1:9004".to_string(),
                         scopes: vec!["https://www.googleapis.com/auth/calendar.events".to_string()],
                     },
-                    calendar: GoogleCalendar {
-                        get_events: GoogleCalendarGetEvents { calendar_ids },
-                    },
+                    accounts,
                 },
             },
-            output: Output {
+            prompt: Prompt {
                 template: crate::config::templates::google::STANDARD.to_string(),
+                calendar_ids: vec!["test@example.com".to_string()],
             },
-            settings: Settings {
-                oauth_file_path,
-                tz,
-            },
-            experimental: Experimental {
-                mcp: Mcp {
-                    insert_calendar_event: InsertCalendarEvent { calendar_id: None },
-                },
-            },
+            settings: Settings { oauth2_path, tz },
         };
 
         assert_eq!(config, expected, "Config should match the expected struct");
