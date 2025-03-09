@@ -86,7 +86,7 @@ fn get_config_file_path() -> anyhow::Result<PathBuf> {
 
 fn get_oauth_path() -> anyhow::Result<PathBuf> {
     let home_dir = env::var("HOME").map_err(|_e| ConfigError::HomeEnvironmentNotFoundError)?;
-    let default_path = format!("{}/.local/share/cal2prompt/oauth", home_dir);
+    let default_path = format!("{}/.local/share/cal2prompt/oauth2", home_dir);
     let p = PathBuf::from(&default_path);
 
     Ok(p)

@@ -276,7 +276,7 @@ impl<'a> McpHandler<'a> {
                 "protocolVersion": "2024-11-05",
                 "serverInfo": {
                     "name": "cal2prompt",
-                    "version": "0.1.0"
+                    "version": "0.1.0" // FIXME: get version from Cargo.toml
                 }
             })),
             error: None,
