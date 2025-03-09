@@ -84,31 +84,17 @@ impl Cal2Prompt {
         match config::init() {
             Ok(config) => {
                 let mut profiles = BTreeMap::new();
-                for profile in config.source.google.profile.keys() {
-                    let token_path = format!("{}/{}", config.settings.oauth2_path, profile);
+                for account in &config.source.google.accounts {
+                    let token_path = format!("{}/{}", config.settings.oauth2_path, account.name);
 
                     profiles.insert(
-                        profile.to_string(),
+                        account.name.to_string(),
                         ProfileConfig {
                             token: None,
                             path: token_path,
-                            profile_name: profile.to_string(),
-                            calendar_ids: config
-                                .source
-                                .google
-                                .profile
-                                .get(profile)
-                                .unwrap()
-                                .calendar_ids
-                                .clone(),
-                            authorize_account: config
-                                .source
-                                .google
-                                .profile
-                                .get(profile)
-                                .unwrap()
-                                .authorize_account
-                                .clone(),
+                            profile_name: account.name.to_string(),
+                            calendar_ids: account.calendar_ids.clone(),
+                            authorize_account: account.authorize_account.clone(),
                         },
                     );
                 }
@@ -119,17 +105,23 @@ impl Cal2Prompt {
         }
     }
 
-    pub async fn oauth(&mut self, profile: Option<String>) -> anyhow::Result<()> {
+    pub async fn oauth(&mut self, profile_name: Option<String>) -> anyhow::Result<()> {
+        let profile_name = profile_name.unwrap_or_else(|| "work".to_string());
+
+        let _profile = self
+            .config
+            .source
+            .google
+            .accounts
+            .iter()
+            .find(|account| account.name == profile_name)
+            .ok_or_else(|| anyhow::anyhow!("Profile not found: {}", profile_name))?;
+
         let oauth2_client = OAuth2Client::new(
             &self.config.source.google.oauth2.client_id,
             &self.config.source.google.oauth2.client_secret,
             &self.config.source.google.oauth2.redirect_url,
         );
-
-        let profile_name = match &profile {
-            Some(p) => p.clone(),
-            None => self.profiles.keys().next().unwrap().clone(),
-        };
 
         let profile_path = self.profiles.get(&profile_name).unwrap().path.clone();
 

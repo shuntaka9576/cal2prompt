@@ -159,9 +159,9 @@ async fn init_cal2prompt() -> anyhow::Result<Cal2Prompt> {
         .config
         .source
         .google
-        .profile
-        .keys()
-        .cloned()
+        .accounts
+        .iter()
+        .map(|account| account.name.clone())
         .collect();
 
     for name in profiles {

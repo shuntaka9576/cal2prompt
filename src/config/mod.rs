@@ -5,7 +5,6 @@ use crate::config::error::ConfigError;
 use crate::shared::utils;
 use mlua::{Lua, Table, Value};
 use std::{
-    collections::HashMap,
     env, fs,
     path::{Path, PathBuf},
 };
@@ -37,7 +36,7 @@ pub struct Prompt {
 #[derive(Debug, PartialEq, Eq, Clone)]
 pub struct GoogleSource {
     pub oauth2: GoogleOAuth2,
-    pub profile: HashMap<String, ProfileConfig>,
+    pub accounts: Vec<AccountConfig>,
 }
 
 #[derive(Debug, PartialEq, Eq, Clone)]
@@ -49,7 +48,8 @@ pub struct GoogleOAuth2 {
 }
 
 #[derive(Debug, PartialEq, Eq, Clone)]
-pub struct ProfileConfig {
+pub struct AccountConfig {
+    pub name: String,
     pub calendar_ids: Vec<String>,
     pub authorize_account: String,
 }
@@ -86,7 +86,7 @@ fn get_config_file_path() -> anyhow::Result<PathBuf> {
 
 fn get_oauth_path() -> anyhow::Result<PathBuf> {
     let home_dir = env::var("HOME").map_err(|_e| ConfigError::HomeEnvironmentNotFoundError)?;
-    let default_path = format!("{}/.local/share/cal2prompt/oauth2", home_dir);
+    let default_path = format!("{}/.local/share/cal2prompt/oauth", home_dir);
     let p = PathBuf::from(&default_path);
 
     Ok(p)
@@ -154,10 +154,10 @@ fn parse_source(config_tbl: &Table, config_file_path: &Path, lua: &Lua) -> anyho
     let google_tbl: Table = source_tbl.get::<Table>("google")?;
 
     let oauth2 = parse_oauth2(&google_tbl, config_file_path, lua)?;
-    let profile = parse_profiles(&google_tbl, config_file_path)?;
+    let accounts = parse_accounts(&google_tbl, config_file_path)?;
 
     Ok(Source {
-        google: GoogleSource { oauth2, profile },
+        google: GoogleSource { oauth2, accounts },
     })
 }
 
@@ -207,24 +207,33 @@ fn parse_oauth2(
     })
 }
 
-fn parse_profiles(
+fn parse_accounts(
     google_tbl: &Table,
     config_file_path: &Path,
-) -> anyhow::Result<HashMap<String, ProfileConfig>> {
-    let mut profiles = HashMap::new();
+) -> anyhow::Result<Vec<AccountConfig>> {
+    let mut accounts = Vec::new();
 
-    if let Ok(profile_tbl) = google_tbl.get::<Table>("profile") {
-        for (profile_name, profile_data) in profile_tbl.pairs::<String, Table>().flatten() {
-            let authorize_account: String = profile_data
-                .get::<Option<String>>("authorizeAccount")?
+    if let Ok(accounts_tbl) = google_tbl.get::<Table>("accounts") {
+        for account_value in accounts_tbl.sequence_values::<Table>().flatten() {
+            let name = account_value
+                .get::<Option<String>>("name")?
                 .ok_or_else(|| {
                     ConfigError::RequiredFieldNotFound(
-                        "source.google.calendar.getEvents.authorizeAccount".to_owned(),
+                        "source.google.accounts[].name".to_owned(),
                         utils::path::contract_tilde(config_file_path),
                     )
                 })?;
 
-            if let Ok(calendar_ids_tbl) = profile_data.get::<Table>("calendarIDs") {
+            let authorize_account = account_value
+                .get::<Option<String>>("authorizeAccount")?
+                .ok_or_else(|| {
+                    ConfigError::RequiredFieldNotFound(
+                        "source.google.accounts[].authorizeAccount".to_owned(),
+                        utils::path::contract_tilde(config_file_path),
+                    )
+                })?;
+
+            if let Ok(calendar_ids_tbl) = account_value.get::<Table>("calendarIDs") {
                 let calendar_ids: Vec<String> = calendar_ids_tbl
                     .sequence_values()
                     .filter_map(|v| {
@@ -233,18 +242,16 @@ fn parse_profiles(
                     })
                     .collect();
 
-                profiles.insert(
-                    profile_name,
-                    ProfileConfig {
-                        calendar_ids,
-                        authorize_account,
-                    },
-                );
+                accounts.push(AccountConfig {
+                    name,
+                    calendar_ids,
+                    authorize_account,
+                });
             }
         }
     }
 
-    Ok(profiles)
+    Ok(accounts)
 }
 
 fn parse_prompt(config_tbl: &Table, config_file_path: &Path, lua: &Lua) -> anyhow::Result<Prompt> {
@@ -322,12 +329,14 @@ return {
         clientSecret = secrets.google.oauth2.clientSecret,
         redirectURL = "http://127.0.0.1:9004",
       },
-      profile = {
-        work = {
+      accounts = {
+        {
+          name = "work",
           calendarIDs = { "test@example.com" },
           authorizeAccount = "test@example.com"
         },
-        private = {
+        {
+          name = "private",
           calendarIDs = { "private@example.com" },
           authorizeAccount = "private@example.com"
         }
@@ -383,21 +392,18 @@ return M
         let oauth2_path = format!("{}/.local/share/cal2prompt/oauth", home_dir);
         let tz = "UTC".to_string();
 
-        let mut profiles = HashMap::new();
-        profiles.insert(
-            "work".to_string(),
-            ProfileConfig {
+        let accounts = vec![
+            AccountConfig {
+                name: "work".to_string(),
                 calendar_ids: vec!["test@example.com".to_string()],
                 authorize_account: "test@example.com".to_string(),
             },
-        );
-        profiles.insert(
-            "private".to_string(),
-            ProfileConfig {
+            AccountConfig {
+                name: "private".to_string(),
                 calendar_ids: vec!["private@example.com".to_string()],
                 authorize_account: "private@example.com".to_string(),
             },
-        );
+        ];
 
         let expected = Config {
             source: Source {
@@ -408,7 +414,7 @@ return M
                         redirect_url: "http://127.0.0.1:9004".to_string(),
                         scopes: vec!["https://www.googleapis.com/auth/calendar.events".to_string()],
                     },
-                    profile: profiles,
+                    accounts,
                 },
             },
             prompt: Prompt {
@@ -423,17 +429,25 @@ return M
 
         assert_eq!(config, expected, "Config should match the expected struct");
         assert_eq!(
-            config.source.google.profile.len(),
+            config.source.google.accounts.len(),
             2,
-            "Should have 2 profiles"
+            "Should have 2 accounts"
         );
         assert!(
-            config.source.google.profile.contains_key("work"),
-            "Should contain 'work' profile"
+            config.source.google.accounts.contains(&AccountConfig {
+                name: "work".to_string(),
+                calendar_ids: vec!["test@example.com".to_string()],
+                authorize_account: "test@example.com".to_string(),
+            }),
+            "Should contain 'work' account"
         );
         assert!(
-            config.source.google.profile.contains_key("private"),
-            "Should contain 'private' profile"
+            config.source.google.accounts.contains(&AccountConfig {
+                name: "private".to_string(),
+                calendar_ids: vec!["private@example.com".to_string()],
+                authorize_account: "private@example.com".to_string(),
+            }),
+            "Should contain 'private' account"
         );
 
         Ok(())
@@ -458,10 +472,16 @@ return {
         clientID = secrets.google.oauth2.clientID,
         clientSecret = secrets.google.oauth2.clientSecret,
       },
-      calendar = {
-        getEvents = {
+      accounts = {
+        {
+          name = "work",
           calendarIDs = { "test@example.com" },
           authorizeAccount = "test@example.com"
+        },
+        {
+          name = "private",
+          calendarIDs = { "private@example.com" },
+          authorizeAccount = "private@example.com"
         }
       }
     },
@@ -507,6 +527,19 @@ return M
         let oauth2_path = format!("{}/.local/share/cal2prompt/oauth", home_dir);
         let tz = "UTC".to_string();
 
+        let accounts = vec![
+            AccountConfig {
+                name: "work".to_string(),
+                calendar_ids: vec!["test@example.com".to_string()],
+                authorize_account: "test@example.com".to_string(),
+            },
+            AccountConfig {
+                name: "private".to_string(),
+                calendar_ids: vec!["private@example.com".to_string()],
+                authorize_account: "private@example.com".to_string(),
+            },
+        ];
+
         let expected = Config {
             source: Source {
                 google: GoogleSource {
@@ -516,7 +549,7 @@ return M
                         redirect_url: "http://127.0.0.1:9004".to_string(),
                         scopes: vec!["https://www.googleapis.com/auth/calendar.events".to_string()],
                     },
-                    profile: HashMap::new(),
+                    accounts,
                 },
             },
             prompt: Prompt {
