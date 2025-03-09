@@ -9,11 +9,22 @@ use crate::google::calendar::model::{
 use crate::shared::utils::date::to_utc_start_of_start_rfc3339;
 
 #[derive(Debug, thiserror::Error)]
+#[allow(dead_code)]
 pub enum CalendarServiceError {
     #[error("No calendar_id configured. Please specify experimental.mcp.insertCalendarEvent.calendarID in your config.")]
     NoCalendarId,
     #[error("Profile '{0}' not found in configuration")]
     ProfileNotFound(String),
+}
+
+pub struct CalendarEventParams<'a> {
+    pub summary: &'a str,
+    pub description: Option<String>,
+    pub start: &'a str,
+    pub end: &'a str,
+    pub tz: &'a Tz,
+    pub calendar_id: &'a str,
+    pub token: &'a str,
 }
 
 pub struct GoogleCalendarService {
@@ -22,26 +33,20 @@ pub struct GoogleCalendarService {
 
 impl GoogleCalendarService {
     pub fn new() -> Self {
-        let calendar_client = GoogleCalendarClient::new();
-
-        Self { calendar_client }
+        Self {
+            calendar_client: GoogleCalendarClient::new(),
+        }
     }
 
     pub async fn create_calendar_event(
         &self,
-        summary: &str,
-        description: Option<String>,
-        start: &str,
-        end: &str,
-        tz: &Tz,
-        calendar_id: &str,
-        token: &str,
+        params: CalendarEventParams<'_>,
     ) -> anyhow::Result<CreatedEventResponse> {
-        let start_naive_date = NaiveDateTime::parse_from_str(start, "%Y-%m-%d %H:%M")?;
-        let end_naive_date = NaiveDateTime::parse_from_str(end, "%Y-%m-%d %H:%M")?;
+        let start_naive_date = NaiveDateTime::parse_from_str(params.start, "%Y-%m-%d %H:%M")?;
+        let end_naive_date = NaiveDateTime::parse_from_str(params.end, "%Y-%m-%d %H:%M")?;
 
-        let start_with_tz = tz.from_local_datetime(&start_naive_date).unwrap();
-        let end_with_tz = tz.from_local_datetime(&end_naive_date).unwrap();
+        let start_with_tz = &params.tz.from_local_datetime(&start_naive_date).unwrap();
+        let end_with_tz = &params.tz.from_local_datetime(&end_naive_date).unwrap();
 
         let start_rfc3339 = start_with_tz.to_rfc3339();
         let end_rfc3339 = end_with_tz.to_rfc3339();
@@ -49,22 +54,22 @@ impl GoogleCalendarService {
         let res = self
             .calendar_client
             .create_calendar_event(
-                token,
-                calendar_id,
+                params.token,
+                params.calendar_id,
                 &InsertEventRequest {
-                    summary: summary.to_string(),
+                    summary: params.summary.to_string(),
                     start: EventDateTime {
                         date_time: Some(start_rfc3339),
-                        time_zone: Some(tz.to_string()),
+                        time_zone: Some(params.tz.to_string()),
                         date: None,
                     },
                     end: EventDateTime {
                         date_time: Some(end_rfc3339),
-                        time_zone: Some(tz.to_string()),
+                        time_zone: Some(params.tz.to_string()),
                         date: None,
                     },
                     location: None,
-                    description,
+                    description: params.description,
                     attendees: None, // TODO: add attendees
                 },
             )
@@ -88,7 +93,7 @@ impl GoogleCalendarService {
         until: &str,
         tz: &Tz,
         calendar_ids: &[String],
-        token: &String,
+        token: &str,
     ) -> anyhow::Result<Vec<EventItem>> {
         let since_naive_date = NaiveDate::parse_from_str(since, "%Y-%m-%d")?
             .and_hms_opt(0, 0, 0)

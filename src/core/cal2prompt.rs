@@ -2,7 +2,7 @@ use crate::config::{self, Config};
 use crate::core::event::{EventDurationCalculator, RealClock};
 use crate::core::template::generate;
 use crate::google::calendar::model::{CreatedEventResponse, EventItem};
-use crate::google::calendar::service::GoogleCalendarService;
+use crate::google::calendar::service::{CalendarEventParams, GoogleCalendarService};
 use crate::google::oauth::{OAuth2Client, OAuth2Error, Token};
 use crate::mcp::handler::McpHandler;
 use crate::mcp::stdio::StdioTransport;
@@ -37,6 +37,7 @@ pub enum JsonRpcErrorCode {
     CalendarIdNotFound = -32002,
 }
 
+#[allow(dead_code)]
 pub struct ProfileConfig {
     pub profile_name: String,
     pub calendar_ids: Vec<String>,
@@ -255,17 +256,17 @@ impl Cal2Prompt {
 
         let calendar_id = profile_config.calendar_ids.first().unwrap(); // FIXME mapping calndarName and calnderId
 
-        calendar_service
-            .create_calendar_event(
-                summary,
-                description,
-                start,
-                end,
-                &tz,
-                calendar_id,
-                &profile_config.token.as_ref().unwrap().access_token,
-            )
-            .await
+        let params = CalendarEventParams {
+            summary,
+            description,
+            start,
+            end,
+            tz: &tz,
+            calendar_id,
+            token: &profile_config.token.as_ref().unwrap().access_token,
+        };
+
+        calendar_service.create_calendar_event(params).await
     }
 
     pub async fn fetch_days(
@@ -309,7 +310,7 @@ impl Cal2Prompt {
             all_events,
             since_with_tz,
             until_with_tz,
-            tz.clone(),
+            tz,
         ))
     }
 

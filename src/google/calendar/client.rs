@@ -35,7 +35,7 @@ impl GoogleCalendarClient {
         let response = self
             .client
             .get(&url)
-            .bearer_auth(token.clone())
+            .bearer_auth(token)
             .query(&[
                 ("timeMin", since),
                 ("timeMax", until),
