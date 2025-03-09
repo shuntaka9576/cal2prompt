@@ -19,6 +19,12 @@ pub enum Cal2PromptError {
     #[error("OAuth2 port in use: {0}")]
     OAuth2PortInUse(#[from] OAuth2Error),
 
+    #[error("Account name not specified")]
+    AccountNameNotSpecified,
+
+    #[error("Account not found: {0}")]
+    AccountNotFound(String),
+
     #[error(transparent)]
     Other(#[from] anyhow::Error),
 }
@@ -38,7 +44,7 @@ pub enum JsonRpcErrorCode {
 }
 
 #[allow(dead_code)]
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub struct AccountConfig {
     pub account_name: String,
     pub calendar_ids: Vec<String>,
@@ -49,7 +55,7 @@ pub struct AccountConfig {
 
 pub type AccountName = String;
 pub struct Cal2Prompt {
-    config: Config,
+    pub config: Config,
     pub accounts: BTreeMap<AccountName, AccountConfig>,
 }
 
@@ -107,16 +113,13 @@ impl Cal2Prompt {
     }
 
     pub async fn oauth(&mut self, account_name: Option<String>) -> anyhow::Result<()> {
-        let account_name = account_name.unwrap_or_else(|| "work".to_string());
-
-        let _account = self
-            .config
-            .source
-            .google
+        let account_name = account_name.ok_or_else(|| Cal2PromptError::AccountNameNotSpecified)?;
+        let account = self
             .accounts
-            .iter()
-            .find(|account| account.name == account_name)
-            .ok_or_else(|| anyhow::anyhow!("Account not found: {}", account_name))?;
+            .get(&account_name)
+            .ok_or_else(|| Cal2PromptError::AccountNotFound(account_name.clone()))?;
+
+        println!("account: {:?}", account);
 
         let oauth2_client = OAuth2Client::new(
             &self.config.source.google.oauth2.client_id,
@@ -124,21 +127,19 @@ impl Cal2Prompt {
             &self.config.source.google.oauth2.redirect_url,
         );
 
-        let account_path = self.accounts.get(&account_name).unwrap().path.clone();
-
-        let token = match fs::read_to_string(&account_path) {
+        let token = match fs::read_to_string(&account.path) {
             Ok(content) => {
                 let stored = serde_json::from_str::<Token>(&content)?;
 
                 if stored.is_expired() {
                     if let Some(ref refresh) = stored.refresh_token {
                         let refreshed = oauth2_client.refresh_token(refresh.clone()).await?;
-                        Self::save_token(&refreshed, &account_path).await?;
+                        Self::save_token(&refreshed, &account.path).await?;
                         refreshed
                     } else {
                         match oauth2_client.oauth_flow().await {
                             Ok(token) => {
-                                Self::save_token(&token, &account_path).await?;
+                                Self::save_token(&token, &account.path).await?;
                                 token
                             }
                             Err(e) => {
@@ -158,18 +159,29 @@ impl Cal2Prompt {
                     stored
                 }
             }
-            Err(_) => match oauth2_client.oauth_flow().await {
-                Ok(new_token) => {
-                    Self::save_token(&new_token, &account_path).await?;
-                    new_token
-                }
-                Err(e) => {
-                    if let Some(OAuth2Error::PortInUse) = e.downcast_ref::<OAuth2Error>() {
-                        return Err(Cal2PromptError::OAuth2PortInUse(OAuth2Error::PortInUse).into());
+            Err(_) => {
+                eprintln!(
+                    r#"Starting OAuth authentication for Google account 🚀
+---
+Please authorize with account [{}]: {}"#,
+                    account.account_name, account.authorize_account
+                );
+
+                match oauth2_client.oauth_flow().await {
+                    Ok(new_token) => {
+                        Self::save_token(&new_token, &account.path).await?;
+                        new_token
                     }
-                    return Err(e);
+                    Err(e) => {
+                        if let Some(OAuth2Error::PortInUse) = e.downcast_ref::<OAuth2Error>() {
+                            return Err(
+                                Cal2PromptError::OAuth2PortInUse(OAuth2Error::PortInUse).into()
+                            );
+                        }
+                        return Err(e);
+                    }
                 }
-            },
+            }
         };
 
         if let Some(account_config) = self.accounts.get_mut(&account_name) {
@@ -182,10 +194,15 @@ impl Cal2Prompt {
     pub async fn ensure_valid_token(&mut self, account: Option<String>) -> anyhow::Result<()> {
         let account_name = match &account {
             Some(p) => p.clone(),
-            None => self.accounts.keys().next().unwrap().clone(),
+            None => return Err(Cal2PromptError::AccountNameNotSpecified.into()),
         };
 
-        let account_path = self.accounts.get(&account_name).unwrap().path.clone();
+        let account_path = self
+            .accounts
+            .get(&account_name)
+            .ok_or_else(|| Cal2PromptError::AccountNotFound(account_name.clone()))?
+            .path
+            .clone();
 
         if let Some(token) = &self.accounts.get(&account_name).unwrap().token {
             if token.is_expired() {
@@ -238,9 +255,12 @@ impl Cal2Prompt {
     ) -> anyhow::Result<CreatedEventResponse> {
         let account_name = match &account {
             Some(p) => p.clone(),
-            None => self.accounts.keys().next().unwrap().clone(),
+            None => return Err(Cal2PromptError::AccountNameNotSpecified.into()),
         };
-        let account_config = self.accounts.get(&account_name).unwrap();
+        let account_config = self
+            .accounts
+            .get(&account_name)
+            .ok_or_else(|| Cal2PromptError::AccountNotFound(account_name.clone()))?;
         let calendar_service = GoogleCalendarService::new();
         let tz: Tz =
             self.config.settings.tz.parse().unwrap_or_else(|_| {
@@ -275,9 +295,12 @@ impl Cal2Prompt {
 
         let account_name = match &account {
             Some(p) => p.clone(),
-            None => self.accounts.keys().next().unwrap().clone(),
+            None => return Err(Cal2PromptError::AccountNameNotSpecified.into()),
         };
-        let account_config = self.accounts.get(&account_name).unwrap();
+        let account_config = self
+            .accounts
+            .get(&account_name)
+            .ok_or_else(|| Cal2PromptError::AccountNotFound(account_name.clone()))?;
 
         let since_naive_date = NaiveDate::parse_from_str(since, "%Y-%m-%d")?
             .and_hms_opt(0, 0, 0)
@@ -438,7 +461,6 @@ impl Cal2Prompt {
     pub async fn fetch_duration(
         &self,
         get_event_duration: GetEventDuration,
-        account: Option<AccountName>,
     ) -> anyhow::Result<String> {
         let tz: Tz =
             self.config.settings.tz.parse().unwrap_or_else(|_| {
@@ -451,7 +473,8 @@ impl Cal2Prompt {
         let since = since_with_tz.format("%Y-%m-%d").to_string();
         let until = until_with_tz.format("%Y-%m-%d").to_string();
 
-        let days = self.fetch_days(&since, &until, account).await?;
+        // FIXME: account should be specified
+        let days = self.fetch_days(&since, &until, None).await?;
         self.render_days(days)
     }
 
