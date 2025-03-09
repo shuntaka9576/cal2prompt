@@ -74,20 +74,28 @@ impl Cal2Prompt {
         match config::init() {
             Ok(config) => Ok(Self {
                 config,
-                token: None,
+                token: None, // FIXME: set profile and token
             }),
             Err(e) => Err(e),
         }
     }
 
-    pub async fn oauth(&mut self, profile: &str) -> anyhow::Result<()> {
+    pub async fn oauth(&mut self, profile: Option<String>) -> anyhow::Result<()> {
         let oauth2_client = OAuth2Client::new(
             &self.config.source.google.oauth2.client_id,
             &self.config.source.google.oauth2.client_secret,
             &self.config.source.google.oauth2.redirect_url,
         );
 
-        let token_path = format!("{}/{}", self.config.settings.oauth2_path, profile);
+        let token_path = match profile {
+            Some(profile) => {
+                format!("{}/{}", self.config.settings.oauth2_path, profile)
+            }
+            None => {
+                let profile = self.config.source.google.profile.keys().next().unwrap();
+                format!("{}/{}", self.config.settings.oauth2_path, profile)
+            }
+        };
 
         let token = match fs::read_to_string(&token_path) {
             Ok(content) => {

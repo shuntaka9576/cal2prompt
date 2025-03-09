@@ -137,7 +137,13 @@ impl<'a> McpHandler<'a> {
         id: u64,
         params: Option<serde_json::Value>,
     ) -> anyhow::Result<()> {
-        if let Err(err) = self.ensure_authentication(transport, id).await {
+        let profile: Option<String> = params
+            .as_ref()
+            .and_then(|p| p.pointer("/arguments/profile"))
+            .and_then(|v| v.as_str())
+            .map(ToString::to_string);
+
+        if let Err(err) = self.ensure_authentication(transport, id, profile).await {
             return err;
         }
 
@@ -151,9 +157,10 @@ impl<'a> McpHandler<'a> {
         &mut self,
         transport: &StdioTransport,
         id: u64,
+        profile: Option<String>,
     ) -> Result<(), anyhow::Result<()>> {
         if self.cal2prompt.token.is_none() {
-            if let Err(err) = self.cal2prompt.oauth().await {
+            if let Err(err) = self.cal2prompt.oauth(profile).await {
                 if let Some(Cal2PromptError::OAuth2PortInUse(_)) =
                     err.downcast_ref::<Cal2PromptError>()
                 {
@@ -177,7 +184,7 @@ impl<'a> McpHandler<'a> {
             }
         }
 
-        if let Err(err) = self.cal2prompt.ensure_valid_token().await {
+        if let Err(err) = self.cal2prompt.ensure_valid_token(profile).await {
             if let Some(Cal2PromptError::OAuth2PortInUse(_)) = err.downcast_ref::<Cal2PromptError>()
             {
                 return Err(self.send_error_response(
