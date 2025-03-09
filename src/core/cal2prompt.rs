@@ -33,23 +33,24 @@ pub enum JsonRpcErrorCode {
     InternalError = -32603,
     // Custom error codes should be in the range -32000 to -32099
     PortInUse = -32000,
-    ProfileNotFound = -32001,
+    AccountNotFound = -32001,
     CalendarIdNotFound = -32002,
 }
 
 #[allow(dead_code)]
-pub struct ProfileConfig {
-    pub profile_name: String,
+#[derive(Clone)]
+pub struct AccountConfig {
+    pub account_name: String,
     pub calendar_ids: Vec<String>,
     pub authorize_account: String,
     pub token: Option<Token>,
     pub path: String,
 }
 
-pub type ProfileName = String;
+pub type AccountName = String;
 pub struct Cal2Prompt {
-    pub config: Config,
-    pub profiles: BTreeMap<ProfileName, ProfileConfig>,
+    config: Config,
+    pub accounts: BTreeMap<AccountName, AccountConfig>,
 }
 
 #[derive(Debug, Serialize)]
@@ -83,39 +84,39 @@ impl Cal2Prompt {
     pub fn new() -> anyhow::Result<Self> {
         match config::init() {
             Ok(config) => {
-                let mut profiles = BTreeMap::new();
+                let mut accounts = BTreeMap::new();
                 for account in &config.source.google.accounts {
                     let token_path = format!("{}/{}", config.settings.oauth2_path, account.name);
 
-                    profiles.insert(
+                    accounts.insert(
                         account.name.to_string(),
-                        ProfileConfig {
+                        AccountConfig {
                             token: None,
                             path: token_path,
-                            profile_name: account.name.to_string(),
+                            account_name: account.name.to_string(),
                             calendar_ids: account.calendar_ids.clone(),
                             authorize_account: account.authorize_account.clone(),
                         },
                     );
                 }
 
-                Ok(Self { config, profiles })
+                Ok(Self { config, accounts })
             }
             Err(e) => Err(e),
         }
     }
 
-    pub async fn oauth(&mut self, profile_name: Option<String>) -> anyhow::Result<()> {
-        let profile_name = profile_name.unwrap_or_else(|| "work".to_string());
+    pub async fn oauth(&mut self, account_name: Option<String>) -> anyhow::Result<()> {
+        let account_name = account_name.unwrap_or_else(|| "work".to_string());
 
-        let _profile = self
+        let _account = self
             .config
             .source
             .google
             .accounts
             .iter()
-            .find(|account| account.name == profile_name)
-            .ok_or_else(|| anyhow::anyhow!("Profile not found: {}", profile_name))?;
+            .find(|account| account.name == account_name)
+            .ok_or_else(|| anyhow::anyhow!("Account not found: {}", account_name))?;
 
         let oauth2_client = OAuth2Client::new(
             &self.config.source.google.oauth2.client_id,
@@ -123,21 +124,21 @@ impl Cal2Prompt {
             &self.config.source.google.oauth2.redirect_url,
         );
 
-        let profile_path = self.profiles.get(&profile_name).unwrap().path.clone();
+        let account_path = self.accounts.get(&account_name).unwrap().path.clone();
 
-        let token = match fs::read_to_string(&profile_path) {
+        let token = match fs::read_to_string(&account_path) {
             Ok(content) => {
                 let stored = serde_json::from_str::<Token>(&content)?;
 
                 if stored.is_expired() {
                     if let Some(ref refresh) = stored.refresh_token {
                         let refreshed = oauth2_client.refresh_token(refresh.clone()).await?;
-                        Self::save_token(&refreshed, &profile_path).await?;
+                        Self::save_token(&refreshed, &account_path).await?;
                         refreshed
                     } else {
                         match oauth2_client.oauth_flow().await {
                             Ok(token) => {
-                                Self::save_token(&token, &profile_path).await?;
+                                Self::save_token(&token, &account_path).await?;
                                 token
                             }
                             Err(e) => {
@@ -159,7 +160,7 @@ impl Cal2Prompt {
             }
             Err(_) => match oauth2_client.oauth_flow().await {
                 Ok(new_token) => {
-                    Self::save_token(&new_token, &profile_path).await?;
+                    Self::save_token(&new_token, &account_path).await?;
                     new_token
                 }
                 Err(e) => {
@@ -171,22 +172,22 @@ impl Cal2Prompt {
             },
         };
 
-        if let Some(profile_config) = self.profiles.get_mut(&profile_name) {
-            profile_config.token = Some(token);
+        if let Some(account_config) = self.accounts.get_mut(&account_name) {
+            account_config.token = Some(token);
         }
 
         Ok(())
     }
 
-    pub async fn ensure_valid_token(&mut self, profile: Option<String>) -> anyhow::Result<()> {
-        let profile_name = match &profile {
+    pub async fn ensure_valid_token(&mut self, account: Option<String>) -> anyhow::Result<()> {
+        let account_name = match &account {
             Some(p) => p.clone(),
-            None => self.profiles.keys().next().unwrap().clone(),
+            None => self.accounts.keys().next().unwrap().clone(),
         };
 
-        let profile_path = self.profiles.get(&profile_name).unwrap().path.clone();
+        let account_path = self.accounts.get(&account_name).unwrap().path.clone();
 
-        if let Some(token) = &self.profiles.get(&profile_name).unwrap().token {
+        if let Some(token) = &self.accounts.get(&account_name).unwrap().token {
             if token.is_expired() {
                 let oauth2_client = OAuth2Client::new(
                     &self.config.source.google.oauth2.client_id,
@@ -196,14 +197,14 @@ impl Cal2Prompt {
 
                 if let Some(ref refresh_token) = token.refresh_token {
                     let refreshed = oauth2_client.refresh_token(refresh_token.clone()).await?;
-                    Self::save_token(&refreshed, &profile_path).await?;
+                    Self::save_token(&refreshed, &account_path).await?;
 
-                    self.profiles.get_mut(&profile_name).unwrap().token = Some(refreshed);
+                    self.accounts.get_mut(&account_name).unwrap().token = Some(refreshed);
                 } else {
                     match oauth2_client.oauth_flow().await {
                         Ok(new_token) => {
-                            Self::save_token(&new_token, &profile_path).await?;
-                            self.profiles.get_mut(&profile_name).unwrap().token = Some(new_token);
+                            Self::save_token(&new_token, &account_path).await?;
+                            self.accounts.get_mut(&account_name).unwrap().token = Some(new_token);
                         }
                         Err(e) => {
                             if let Some(OAuth2Error::PortInUse) = e.downcast_ref::<OAuth2Error>() {
@@ -233,20 +234,20 @@ impl Cal2Prompt {
         description: Option<String>,
         start: &str,
         end: &str,
-        profile: Option<ProfileName>,
+        account: Option<AccountName>,
     ) -> anyhow::Result<CreatedEventResponse> {
-        let profile_name = match &profile {
+        let account_name = match &account {
             Some(p) => p.clone(),
-            None => self.profiles.keys().next().unwrap().clone(),
+            None => self.accounts.keys().next().unwrap().clone(),
         };
-        let profile_config = self.profiles.get(&profile_name).unwrap();
+        let account_config = self.accounts.get(&account_name).unwrap();
         let calendar_service = GoogleCalendarService::new();
         let tz: Tz =
             self.config.settings.tz.parse().unwrap_or_else(|_| {
                 panic!("Invalid time zone string '{}'", self.config.settings.tz)
             });
 
-        let calendar_id = profile_config.calendar_ids.first().unwrap(); // FIXME mapping calndarName and calnderId
+        let calendar_id = account_config.calendar_ids.first().unwrap(); // FIXME mapping calndarName and calnderId
 
         let params = CalendarEventParams {
             summary,
@@ -255,7 +256,7 @@ impl Cal2Prompt {
             end,
             tz: &tz,
             calendar_id,
-            token: &profile_config.token.as_ref().unwrap().access_token,
+            token: &account_config.token.as_ref().unwrap().access_token,
         };
 
         calendar_service.create_calendar_event(params).await
@@ -265,18 +266,18 @@ impl Cal2Prompt {
         &self,
         since: &str,
         until: &str,
-        profile: Option<ProfileName>,
+        account: Option<AccountName>,
     ) -> anyhow::Result<Vec<Day>> {
         let tz: Tz =
             self.config.settings.tz.parse().unwrap_or_else(|_| {
                 panic!("Invalid time zone string '{}'", self.config.settings.tz)
             });
 
-        let profile_name = match &profile {
+        let account_name = match &account {
             Some(p) => p.clone(),
-            None => self.profiles.keys().next().unwrap().clone(),
+            None => self.accounts.keys().next().unwrap().clone(),
         };
-        let profile_config = self.profiles.get(&profile_name).unwrap();
+        let account_config = self.accounts.get(&account_name).unwrap();
 
         let since_naive_date = NaiveDate::parse_from_str(since, "%Y-%m-%d")?
             .and_hms_opt(0, 0, 0)
@@ -293,8 +294,8 @@ impl Cal2Prompt {
                 since,
                 until,
                 &tz,
-                &profile_config.calendar_ids,
-                &profile_config.token.as_ref().unwrap().access_token,
+                &account_config.calendar_ids,
+                &account_config.token.as_ref().unwrap().access_token,
             )
             .await?;
 
@@ -417,7 +418,7 @@ impl Cal2Prompt {
     pub async fn get_events_short_cut(
         self,
         get_event_duration: GetEventDuration,
-        profile: Option<ProfileName>,
+        account: Option<AccountName>,
     ) -> anyhow::Result<String> {
         let tz: Tz =
             self.config.settings.tz.parse().unwrap_or_else(|_| {
@@ -430,14 +431,14 @@ impl Cal2Prompt {
         let since = since_with_tz.format("%Y-%m-%d").to_string();
         let until = until_with_tz.format("%Y-%m-%d").to_string();
 
-        let days = self.fetch_days(&since, &until, profile).await?;
+        let days = self.fetch_days(&since, &until, account).await?;
         self.render_days(days)
     }
 
     pub async fn fetch_duration(
         &self,
         get_event_duration: GetEventDuration,
-        profile: Option<ProfileName>,
+        account: Option<AccountName>,
     ) -> anyhow::Result<String> {
         let tz: Tz =
             self.config.settings.tz.parse().unwrap_or_else(|_| {
@@ -450,7 +451,7 @@ impl Cal2Prompt {
         let since = since_with_tz.format("%Y-%m-%d").to_string();
         let until = until_with_tz.format("%Y-%m-%d").to_string();
 
-        let days = self.fetch_days(&since, &until, profile).await?;
+        let days = self.fetch_days(&since, &until, account).await?;
         self.render_days(days)
     }
 
@@ -468,6 +469,11 @@ impl Cal2Prompt {
 
         fs::write(token_file_path, text)?;
         Ok(())
+    }
+
+    pub fn get_accounts(&self) -> anyhow::Result<Vec<AccountConfig>> {
+        let accounts = self.accounts.values().cloned().collect();
+        Ok(accounts)
     }
 }
 

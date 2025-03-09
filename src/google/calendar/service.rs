@@ -13,8 +13,8 @@ use crate::shared::utils::date::to_utc_start_of_start_rfc3339;
 pub enum CalendarServiceError {
     #[error("No calendar_id configured. Please specify experimental.mcp.insertCalendarEvent.calendarID in your config.")]
     NoCalendarId,
-    #[error("Profile '{0}' not found in configuration")]
-    ProfileNotFound(String),
+    #[error("Account '{0}' not found in configuration")]
+    AccountNotFound(String),
 }
 
 pub struct CalendarEventParams<'a> {

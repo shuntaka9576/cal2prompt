@@ -54,10 +54,10 @@ pub struct Cli {
     #[arg(
         long,
         short = 'p',
-        value_name = "PROFILE",
-        help = "Specify a profile name to use (e.g., 'work' or 'private')"
+        value_name = "ACCOUNT",
+        help = "Specify an account name to use (e.g., 'work' or 'private')"
     )]
-    pub profile: Option<String>,
+    pub account: Option<String>,
 }
 
 enum FetchMode {
@@ -87,7 +87,7 @@ async fn main() {
         Some(cmd) => match cmd {
             Commands::Mcp => {
                 // For MCP mode, initialize without OAuth to allow proper error handling via JSON-RPC
-                match init_cal2prompt_without_oauth().await {
+                match init_cal2prompt_mcp().await {
                     Ok(mut cal2prompt) => {
                         if let Err(err) = cal2prompt.launch_mcp().await {
                             eprintln!("Error: {:?}", err);
@@ -103,7 +103,7 @@ async fn main() {
         },
         None => {
             // For CLI mode, initialize with OAuth as before
-            let cal2prompt = match init_cal2prompt().await {
+            let cal2prompt = match init_cal2prompt_cli().await {
                 Ok(cal2prompt) => cal2prompt,
                 Err(e) => {
                     eprintln!("{}", e);
@@ -116,7 +116,7 @@ async fn main() {
             match fetch_mode {
                 FetchMode::Shortcut(duration) => {
                     match cal2prompt
-                        .fetch_duration(duration, cli.profile.clone())
+                        .fetch_duration(duration, cli.account.clone())
                         .await
                     {
                         Ok(output) => {
@@ -130,7 +130,7 @@ async fn main() {
                 }
                 FetchMode::Range(since, until) => {
                     match cal2prompt
-                        .fetch_days(&since, &until, cli.profile.clone())
+                        .fetch_days(&since, &until, cli.account.clone())
                         .await
                     {
                         Ok(days) => match cal2prompt.render_days(days) {
@@ -153,18 +153,16 @@ async fn main() {
     }
 }
 
-async fn init_cal2prompt() -> anyhow::Result<Cal2Prompt> {
+async fn init_cal2prompt_cli() -> anyhow::Result<Cal2Prompt> {
     let mut cal2prompt = Cal2Prompt::new()?;
-    let profiles: Vec<String> = cal2prompt
-        .config
-        .source
-        .google
-        .accounts
-        .iter()
-        .map(|account| account.name.clone())
-        .collect();
 
-    for name in profiles {
+    let accounts = cal2prompt
+        .get_accounts()?
+        .into_iter()
+        .map(|account| account.account_name)
+        .collect::<Vec<String>>();
+
+    for name in accounts {
         if let Err(e) = cal2prompt.oauth(Some(name)).await {
             eprintln!("{}", e);
             std::process::exit(1);
@@ -174,7 +172,7 @@ async fn init_cal2prompt() -> anyhow::Result<Cal2Prompt> {
     Ok(cal2prompt)
 }
 
-async fn init_cal2prompt_without_oauth() -> anyhow::Result<Cal2Prompt> {
+async fn init_cal2prompt_mcp() -> anyhow::Result<Cal2Prompt> {
     // Initialize Cal2Prompt without performing OAuth
     Cal2Prompt::new()
 }

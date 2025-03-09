@@ -137,13 +137,13 @@ impl<'a> McpHandler<'a> {
         id: u64,
         params: Option<serde_json::Value>,
     ) -> anyhow::Result<()> {
-        let profile: Option<String> = params
+        let account: Option<String> = params
             .as_ref()
             .and_then(|p| p.pointer("/arguments/profile"))
             .and_then(|v| v.as_str())
             .map(ToString::to_string);
 
-        if let Err(err) = self.ensure_authentication(transport, id, profile).await {
+        if let Err(err) = self.ensure_authentication(transport, id, account).await {
             return err;
         }
 
@@ -157,22 +157,22 @@ impl<'a> McpHandler<'a> {
         &mut self,
         transport: &StdioTransport,
         id: u64,
-        profile: Option<String>,
+        account: Option<String>,
     ) -> Result<(), anyhow::Result<()>> {
-        let profile_name = match &profile {
+        let account_name = match &account {
             Some(p) => p.clone(),
-            None => self.cal2prompt.profiles.keys().next().unwrap().clone(),
+            None => self.cal2prompt.accounts.keys().next().unwrap().clone(),
         };
 
         if self
             .cal2prompt
-            .profiles
-            .get(&profile_name)
+            .accounts
+            .get(&account_name)
             .unwrap()
             .token
             .is_none()
         {
-            if let Err(err) = self.cal2prompt.oauth(profile.clone()).await {
+            if let Err(err) = self.cal2prompt.oauth(account.clone()).await {
                 if let Some(Cal2PromptError::OAuth2PortInUse(_)) =
                     err.downcast_ref::<Cal2PromptError>()
                 {
@@ -196,7 +196,7 @@ impl<'a> McpHandler<'a> {
             }
         }
 
-        if let Err(err) = self.cal2prompt.ensure_valid_token(profile.clone()).await {
+        if let Err(err) = self.cal2prompt.ensure_valid_token(account.clone()).await {
             if let Some(Cal2PromptError::OAuth2PortInUse(_)) = err.downcast_ref::<Cal2PromptError>()
             {
                 return Err(self.send_error_response(
@@ -334,34 +334,37 @@ impl<'a> McpHandler<'a> {
     ) -> anyhow::Result<()> {
         let since_str = params_val
             .pointer("/arguments/since")
-            .and_then(Value::as_str)
-            .unwrap_or("");
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| anyhow::anyhow!("Missing 'since' parameter"))?;
+
         let until_str = params_val
             .pointer("/arguments/until")
-            .and_then(Value::as_str)
-            .unwrap_or("");
-        let profile = params_val
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| anyhow::anyhow!("Missing 'until' parameter"))?;
+
+        let account = params_val
             .pointer("/arguments/profile")
-            .and_then(Value::as_str);
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string());
 
         match self
             .cal2prompt
-            .fetch_days(since_str, until_str, profile.map(|p| p.to_string()))
+            .fetch_days(since_str, until_str, account.map(|p| p.to_string()))
             .await
         {
             Ok(days) => {
-                let result_json = json!({ "days": days });
-                let obj_as_str = serde_json::to_string(&result_json)?;
-                self.send_text_response(transport, id, &obj_as_str).await?;
+                let result = self.cal2prompt.render_days(days)?;
+                self.send_text_response(transport, id, &result).await?;
             }
-            Err(err) => {
-                self.send_error_response(
-                    transport,
-                    id,
-                    JsonRpcErrorCode::InternalError,
-                    format!("Failed to fetch calendar events: {}", err),
-                )
-                .await?;
+            Err(e) => {
+                return self
+                    .send_error_response(
+                        transport,
+                        id,
+                        JsonRpcErrorCode::InternalError,
+                        format!("Failed to fetch calendar events: {}", e),
+                    )
+                    .await;
             }
         }
 
@@ -376,66 +379,72 @@ impl<'a> McpHandler<'a> {
     ) -> anyhow::Result<()> {
         let summary_str = params_val
             .pointer("/arguments/summary")
-            .and_then(Value::as_str)
-            .unwrap_or("");
-        let description_str: Option<String> = params_val
-            .pointer("/arguments/description")
-            .and_then(Value::as_str)
-            .map(String::from);
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| anyhow::anyhow!("Missing 'summary' parameter"))?;
+
         let start_str = params_val
             .pointer("/arguments/start")
-            .and_then(Value::as_str)
-            .unwrap_or("");
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| anyhow::anyhow!("Missing 'start' parameter"))?;
+
         let end_str = params_val
             .pointer("/arguments/end")
-            .and_then(Value::as_str)
-            .unwrap_or("");
-        let profile: Option<String> = params_val
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| anyhow::anyhow!("Missing 'end' parameter"))?;
+
+        let description_str = params_val
+            .pointer("/arguments/description")
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string());
+
+        let account: Option<String> = params_val
             .pointer("/arguments/profile")
             .and_then(|v| v.as_str())
-            .map(ToString::to_string);
+            .map(|s| s.to_string());
 
         match self
             .cal2prompt
-            .insert_event(summary_str, description_str, start_str, end_str, profile)
+            .insert_event(summary_str, description_str, start_str, end_str, account)
             .await
         {
-            Ok(res) => {
-                let obj_as_str = serde_json::to_string(&res)?;
-                self.send_text_response(transport, id, &obj_as_str).await?;
+            Ok(response) => {
+                let result = format!(
+                    "Event created successfully!\nLink: {}",
+                    response
+                        .html_link
+                        .unwrap_or_else(|| "No link available".to_string())
+                );
+                self.send_text_response(transport, id, &result).await?;
             }
-            Err(err) => {
-                if let Some(err_ref) = err.downcast_ref::<CalendarServiceError>() {
-                    match err_ref {
-                        CalendarServiceError::NoCalendarId => {
-                            self.send_error_response(
-                                transport,
-                                id,
-                                JsonRpcErrorCode::InvalidParams,
-                                err.to_string(),
-                            )
-                            .await?;
-                        }
-                        CalendarServiceError::ProfileNotFound(profile) => {
-                            self.send_error_response(
-                                transport,
-                                id,
-                                JsonRpcErrorCode::ProfileNotFound,
-                                format!("Profile '{}' not found", profile),
-                            )
-                            .await?;
-                        }
-                    }
-                } else {
+            Err(e) => match e.downcast::<CalendarServiceError>() {
+                Ok(CalendarServiceError::AccountNotFound(account)) => {
+                    self.send_error_response(
+                        transport,
+                        id,
+                        JsonRpcErrorCode::AccountNotFound,
+                        format!("Account '{}' not found", account),
+                    )
+                    .await?;
+                }
+                Ok(CalendarServiceError::NoCalendarId) => {
+                    self.send_error_response(
+                        transport,
+                        id,
+                        JsonRpcErrorCode::InvalidParams,
+                        "No calendar ID configured".to_string(),
+                    )
+                    .await?;
+                }
+                Err(e) => {
                     self.send_error_response(
                         transport,
                         id,
                         JsonRpcErrorCode::InternalError,
-                        format!("Unexpected error: {}", err),
+                        format!("Unexpected error: {}", e),
                     )
                     .await?;
                 }
-            }
+            },
         }
 
         Ok(())
