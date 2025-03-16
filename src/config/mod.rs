@@ -3,6 +3,9 @@ pub mod templates;
 
 use crate::config::error::ConfigError;
 use crate::shared::utils;
+use anyhow::Context;
+use chrono::prelude::*;
+use chrono_tz::Tz;
 use mlua::{Lua, Table, Value};
 use std::{
     env, fs,
@@ -14,6 +17,7 @@ pub struct Config {
     pub source: Source,
     pub prompt: Prompt,
     pub settings: Settings,
+    pub mcp: Mcp,
 }
 
 #[derive(Debug, PartialEq, Eq, Clone)]
@@ -52,6 +56,28 @@ pub struct AccountConfig {
     pub name: String,
     pub calendar_ids: Vec<String>,
     pub authorize_account: String,
+}
+
+#[derive(Debug, PartialEq, Eq, Clone)]
+pub struct Mcp {
+    pub insert_event: InsertEvent,
+    pub get_events: GetEvents,
+}
+
+#[derive(Debug, PartialEq, Eq, Clone)]
+pub struct InsertEvent {
+    pub target: Vec<Target>,
+}
+
+#[derive(Debug, PartialEq, Eq, Clone)]
+pub struct Target {
+    pub nickname: String,
+    pub calendar_id: String,
+}
+
+#[derive(Debug, PartialEq, Eq, Clone)]
+pub struct GetEvents {
+    pub calendar_ids: Vec<String>,
 }
 
 pub fn init() -> anyhow::Result<Config> {
@@ -103,11 +129,13 @@ fn load_config(config_file_path: &Path) -> anyhow::Result<Config> {
         let source = parse_source(&config_tbl, config_file_path, &lua)?;
         let prompt = parse_prompt(&config_tbl, config_file_path, &lua)?;
         let settings = parse_settings(&config_tbl)?;
+        let mcp = parse_mcp(&config_tbl, config_file_path)?;
 
         Ok(Config {
             source,
             prompt,
             settings,
+            mcp,
         })
     } else {
         Err(ConfigError::RequiredFieldNotFound(
@@ -150,8 +178,29 @@ fn setup_lua_environment(lua: &Lua, config_file_path: &Path) -> anyhow::Result<(
 }
 
 fn parse_source(config_tbl: &Table, config_file_path: &Path, lua: &Lua) -> anyhow::Result<Source> {
-    let source_tbl: Table = config_tbl.get::<Table>("source")?;
-    let google_tbl: Table = source_tbl.get::<Table>("google")?;
+    let source_tbl = config_tbl.get("source")?;
+    let source_tbl: Table = match source_tbl {
+        Value::Table(tbl) => tbl,
+        _ => {
+            return Err(ConfigError::RequiredFieldNotFound(
+                "source".to_owned(),
+                utils::path::contract_tilde(config_file_path),
+            )
+            .into());
+        }
+    };
+
+    let google_tbl = source_tbl.get("google")?;
+    let google_tbl: Table = match google_tbl {
+        Value::Table(tbl) => tbl,
+        _ => {
+            return Err(ConfigError::RequiredFieldNotFound(
+                "source.google".to_owned(),
+                utils::path::contract_tilde(config_file_path),
+            )
+            .into());
+        }
+    };
 
     let oauth2 = parse_oauth2(&google_tbl, config_file_path, lua)?;
     let accounts = parse_accounts(&google_tbl, config_file_path)?;
@@ -166,44 +215,70 @@ fn parse_oauth2(
     config_file_path: &Path,
     lua: &Lua,
 ) -> anyhow::Result<GoogleOAuth2> {
-    let google_oauth2_tbl: Table = google_tbl.get::<Table>("oauth2")?;
+    let google_oauth2_tbl = google_tbl.get("oauth2")?;
+    let google_oauth2_tbl: Table = match google_oauth2_tbl {
+        Value::Table(tbl) => tbl,
+        _ => {
+            return Err(ConfigError::RequiredFieldNotFound(
+                "source.google.oauth2".to_owned(),
+                utils::path::contract_tilde(config_file_path),
+            )
+            .into());
+        }
+    };
 
-    let client_id: String = google_oauth2_tbl
-        .get::<Option<String>>("clientID")?
-        .ok_or_else(|| {
-            ConfigError::RequiredFieldNotFound(
+    let client_id = google_oauth2_tbl.get("clientID")?;
+    let client_id: String = match client_id {
+        Value::String(s) => s.to_str()?.to_string(),
+        _ => {
+            return Err(ConfigError::RequiredFieldNotFound(
                 "source.google.oauth2.clientID".to_owned(),
                 utils::path::contract_tilde(config_file_path),
             )
-        })?;
+            .into());
+        }
+    };
 
-    let client_secret: String = google_oauth2_tbl
-        .get::<Option<String>>("clientSecret")?
-        .ok_or_else(|| {
-            ConfigError::RequiredFieldNotFound(
+    let client_secret = google_oauth2_tbl.get("clientSecret")?;
+    let client_secret: String = match client_secret {
+        Value::String(s) => s.to_str()?.to_string(),
+        _ => {
+            return Err(ConfigError::RequiredFieldNotFound(
                 "source.google.oauth2.clientSecret".to_owned(),
                 utils::path::contract_tilde(config_file_path),
             )
-        })?;
+            .into());
+        }
+    };
 
     let default_scopes_table = lua.create_table()?;
     default_scopes_table.push("https://www.googleapis.com/auth/calendar.events")?;
 
-    let scopes: Vec<String> = google_oauth2_tbl
-        .get::<Option<Table>>("scopes")?
-        .unwrap_or(default_scopes_table)
-        .sequence_values()
-        .collect::<Result<_, _>>()?;
+    let scopes = google_oauth2_tbl.get("scopes")?;
+    let scopes: Table = match scopes {
+        Value::Table(tbl) => tbl,
+        _ => default_scopes_table,
+    };
 
-    let redirect_url: String = google_oauth2_tbl
-        .get::<Option<String>>("redirectURL")?
-        .unwrap_or("http://127.0.0.1:9004".to_string());
+    let mut scopes_vec = Vec::new();
+    for i in 1..=scopes.len()? {
+        let scope = scopes.get(i)?;
+        if let Value::String(s) = scope {
+            scopes_vec.push(s.to_str()?.to_string());
+        }
+    }
+
+    let redirect_url = google_oauth2_tbl.get("redirectURL")?;
+    let redirect_url: String = match redirect_url {
+        Value::String(s) => s.to_str()?.to_string(),
+        _ => "http://127.0.0.1:9004".to_string(),
+    };
 
     Ok(GoogleOAuth2 {
         client_id,
         client_secret,
         redirect_url,
-        scopes,
+        scopes: scopes_vec,
     })
 }
 
@@ -213,34 +288,48 @@ fn parse_accounts(
 ) -> anyhow::Result<Vec<AccountConfig>> {
     let mut accounts = Vec::new();
 
-    if let Ok(accounts_tbl) = google_tbl.get::<Table>("accounts") {
-        for account_value in accounts_tbl.sequence_values::<Table>().flatten() {
-            let name = account_value
-                .get::<Option<String>>("name")?
-                .ok_or_else(|| {
-                    ConfigError::RequiredFieldNotFound(
-                        "source.google.accounts[].name".to_owned(),
-                        utils::path::contract_tilde(config_file_path),
-                    )
-                })?;
+    let accounts_tbl = google_tbl.get("accounts")?;
+    if let Value::Table(accounts_tbl) = accounts_tbl {
+        for i in 1..=accounts_tbl.len()? {
+            let account_value = accounts_tbl.get(i)?;
+            if let Value::Table(account_value) = account_value {
+                let name = account_value.get("name")?;
+                let name: String = match name {
+                    Value::String(s) => s.to_str()?.to_string(),
+                    _ => {
+                        return Err(ConfigError::RequiredFieldNotFound(
+                            "source.google.accounts[].name".to_owned(),
+                            utils::path::contract_tilde(config_file_path),
+                        )
+                        .into());
+                    }
+                };
 
-            let authorize_account = account_value
-                .get::<Option<String>>("authorizeAccount")?
-                .ok_or_else(|| {
-                    ConfigError::RequiredFieldNotFound(
-                        "source.google.accounts[].authorizeAccount".to_owned(),
-                        utils::path::contract_tilde(config_file_path),
-                    )
-                })?;
+                let authorize_account = account_value.get("authorizeAccount")?;
+                let authorize_account: String = match authorize_account {
+                    Value::String(s) => s.to_str()?.to_string(),
+                    _ => {
+                        return Err(ConfigError::RequiredFieldNotFound(
+                            "source.google.accounts[].authorizeAccount".to_owned(),
+                            utils::path::contract_tilde(config_file_path),
+                        )
+                        .into());
+                    }
+                };
 
-            if let Ok(calendar_ids_tbl) = account_value.get::<Table>("calendarIDs") {
-                let calendar_ids: Vec<String> = calendar_ids_tbl
-                    .sequence_values()
-                    .filter_map(|v| {
-                        v.ok()
-                            .and_then(|val: mlua::Value| val.as_str().map(|s| s.to_string()))
-                    })
-                    .collect();
+                let calendar_ids_tbl = account_value.get("calendarIDs")?;
+                let calendar_ids_tbl: Table = match calendar_ids_tbl {
+                    Value::Table(tbl) => tbl,
+                    _ => continue,
+                };
+
+                let mut calendar_ids = Vec::new();
+                for i in 1..=calendar_ids_tbl.len()? {
+                    let id = calendar_ids_tbl.get(i)?;
+                    if let Value::String(id) = id {
+                        calendar_ids.push(id.to_str()?.to_string());
+                    }
+                }
 
                 accounts.push(AccountConfig {
                     name,
@@ -255,27 +344,41 @@ fn parse_accounts(
 }
 
 fn parse_prompt(config_tbl: &Table, config_file_path: &Path, lua: &Lua) -> anyhow::Result<Prompt> {
-    let prompt_tbl = match config_tbl.get::<Table>("prompt") {
-        Ok(tbl) => tbl,
-        Err(_) => {
+    let prompt_tbl = config_tbl.get("prompt")?;
+    let prompt_tbl: Table = match prompt_tbl {
+        Value::Table(tbl) => tbl,
+        _ => {
             let default_tbl = lua.create_table()?;
             default_tbl.set("template", crate::config::templates::google::STANDARD)?;
             default_tbl
         }
     };
 
-    let template: String = prompt_tbl
-        .get::<Option<String>>("template")?
-        .unwrap_or(crate::config::templates::google::STANDARD.to_string());
+    let template = prompt_tbl.get("template")?;
+    let template: String = match template {
+        Value::String(s) => s.to_str()?.to_string(),
+        _ => crate::config::templates::google::STANDARD.to_string(),
+    };
 
-    let calendar_ids: Vec<String> = prompt_tbl
-        .get::<Option<Vec<String>>>("calendarIDs")?
-        .ok_or_else(|| {
-            ConfigError::RequiredFieldNotFound(
+    let calendar_ids_tbl = prompt_tbl.get("calendarIDs")?;
+    let calendar_ids_tbl: Table = match calendar_ids_tbl {
+        Value::Table(tbl) => tbl,
+        _ => {
+            return Err(ConfigError::RequiredFieldNotFound(
                 "prompt.calendarIDs".to_owned(),
                 utils::path::contract_tilde(config_file_path),
             )
-        })?;
+            .into());
+        }
+    };
+
+    let mut calendar_ids = Vec::new();
+    for i in 1..=calendar_ids_tbl.len()? {
+        let id = calendar_ids_tbl.get(i)?;
+        if let Value::String(id) = id {
+            calendar_ids.push(id.to_str()?.to_string());
+        }
+    }
 
     Ok(Prompt {
         template,
@@ -286,22 +389,128 @@ fn parse_prompt(config_tbl: &Table, config_file_path: &Path, lua: &Lua) -> anyho
 fn parse_settings(config_tbl: &Table) -> anyhow::Result<Settings> {
     let oauth_default_path = get_oauth_path()?;
 
-    match config_tbl.get::<Option<Table>>("settings") {
-        Ok(Some(table)) => {
-            let oauth2_path = table
-                .get::<Option<String>>("oauth2Path")?
-                .unwrap_or(oauth_default_path.to_string_lossy().to_string());
-            let tz = table
-                .get::<Option<String>>("TZ")?
-                .unwrap_or("UTC".to_string());
-
-            Ok(Settings { oauth2_path, tz })
+    let settings_tbl = config_tbl.get("settings")?;
+    let settings_tbl: Table = match settings_tbl {
+        Value::Table(tbl) => tbl,
+        _ => {
+            return Ok(Settings {
+                oauth2_path: oauth_default_path.to_string_lossy().to_string(),
+                tz: "UTC".to_string(),
+            });
         }
-        _ => Ok(Settings {
-            oauth2_path: oauth_default_path.to_string_lossy().to_string(),
-            tz: "UTC".to_string(),
-        }),
+    };
+
+    let oauth2_path = settings_tbl.get("oauth2Path")?;
+    let oauth2_path: String = match oauth2_path {
+        Value::String(s) => s.to_str()?.to_string(),
+        _ => oauth_default_path.to_string_lossy().to_string(),
+    };
+
+    let tz = settings_tbl.get("TZ")?;
+    let tz: String = match tz {
+        Value::String(s) => s.to_str()?.to_string(),
+        _ => "UTC".to_string(),
+    };
+
+    Ok(Settings { oauth2_path, tz })
+}
+
+fn parse_mcp(config_tbl: &Table, config_file_path: &Path) -> anyhow::Result<Mcp> {
+    let mcp_tbl = config_tbl.get("mcp")?;
+    let mcp_tbl: Table = match mcp_tbl {
+        Value::Table(tbl) => tbl,
+        _ => {
+            return Err(ConfigError::RequiredFieldNotFound(
+                "mcp".to_owned(),
+                utils::path::contract_tilde(config_file_path),
+            )
+            .into());
+        }
+    };
+
+    let insert_event_tbl = mcp_tbl.get("insertEvent")?;
+    let insert_event_tbl: Table = match insert_event_tbl {
+        Value::Table(tbl) => tbl,
+        _ => {
+            return Err(ConfigError::RequiredFieldNotFound(
+                "mcp.insertEvent".to_owned(),
+                utils::path::contract_tilde(config_file_path),
+            )
+            .into());
+        }
+    };
+
+    let target_tbl = insert_event_tbl.get("target")?;
+    let target_tbl: Table = match target_tbl {
+        Value::Table(tbl) => tbl,
+        _ => {
+            return Err(ConfigError::RequiredFieldNotFound(
+                "mcp.insertEvent.target".to_owned(),
+                utils::path::contract_tilde(config_file_path),
+            )
+            .into());
+        }
+    };
+
+    let mut targets = Vec::new();
+    for i in 1..=target_tbl.len()? {
+        let item = target_tbl.get(i)?;
+        if let Value::Table(item) = item {
+            let nickname = item.get("nickname")?;
+            let nickname: String = match nickname {
+                Value::String(s) => s.to_str()?.to_string(),
+                _ => continue,
+            };
+
+            let calendar_id = item.get("calendarID")?;
+            let calendar_id: String = match calendar_id {
+                Value::String(s) => s.to_str()?.to_string(),
+                _ => continue,
+            };
+
+            targets.push(Target {
+                nickname,
+                calendar_id,
+            });
+        }
     }
+
+    let get_events_tbl = mcp_tbl.get("getEvents")?;
+    let get_events_tbl: Table = match get_events_tbl {
+        Value::Table(tbl) => tbl,
+        _ => {
+            return Err(ConfigError::RequiredFieldNotFound(
+                "mcp.getEvents".to_owned(),
+                utils::path::contract_tilde(config_file_path),
+            )
+            .into());
+        }
+    };
+
+    let calendar_ids_tbl = get_events_tbl.get("calendarIDs")?;
+    let calendar_ids_tbl: Table = match calendar_ids_tbl {
+        Value::Table(tbl) => tbl,
+        _ => {
+            return Err(ConfigError::RequiredFieldNotFound(
+                "mcp.getEvents.calendarIDs".to_owned(),
+                utils::path::contract_tilde(config_file_path),
+            )
+            .into());
+        }
+    };
+
+    let mut calendar_ids = Vec::new();
+    for i in 1..=calendar_ids_tbl.len()? {
+        let id = calendar_ids_tbl.get(i)?;
+        if let Value::String(id) = id {
+            calendar_ids.push(id.to_str()?.to_string());
+        }
+    }
+
+    Ok(Mcp {
+        insert_event: InsertEvent { target: targets },
+        get_events: GetEvents { calendar_ids },
+    })
 }
 
 #[cfg(test)]
@@ -332,24 +541,47 @@ return {
       accounts = {
         {
           name = "work",
-          calendarIDs = { "test@example.com" },
-          authorizeAccount = "test@example.com"
+          authorizeAccount = "test@example.com",
+          calendarIDs = {
+            "test@example.com",
+          },
         },
         {
           name = "private",
-          calendarIDs = { "private@example.com" },
-          authorizeAccount = "private@example.com"
-        }
-      }
+          authorizeAccount = "private@example.com",
+          calendarIDs = {
+            "private@example.com",
+          },
+        },
+      },
     },
   },
   prompt = {
-    template = cal2prompt.template.google.standard,
     calendarIDs = {
       "test@example.com",
       "private@example.com",
     },
-  }
+  },
+  mcp = {
+    insertEvent = {
+      target = {
+        {
+          nickname = "work",
+          calendarID = "test@example.com",
+        },
+        {
+          nickname = "private",
+          calendarID = "private@example.com",
+        },
+      },
+    },
+    getEvents = {
+      calendarIDs = {
+        "test@example.com",
+        "private@example.com",
+      },
+    },
+  },
 }
 "#;
         fs::write(&config_file_path, config_code)?;
@@ -374,12 +606,6 @@ M.google = {
       "private@example.com",
     },
   },
-  prompt = {
-    calendarIDs = {
-      "test@example.com",
-      "private@example.com",
-    },
-  }
 }
 
 return M
@@ -425,6 +651,26 @@ return M
                 ],
             },
             settings: Settings { oauth2_path, tz },
+            mcp: Mcp {
+                insert_event: InsertEvent {
+                    target: vec![
+                        Target {
+                            nickname: "work".to_string(),
+                            calendar_id: "test@example.com".to_string(),
+                        },
+                        Target {
+                            nickname: "private".to_string(),
+                            calendar_id: "private@example.com".to_string(),
+                        },
+                    ],
+                },
+                get_events: GetEvents {
+                    calendar_ids: vec![
+                        "test@example.com".to_string(),
+                        "private@example.com".to_string(),
+                    ],
+                },
+            },
         };
 
         assert_eq!(config, expected, "Config should match the expected struct");
@@ -475,22 +721,47 @@ return {
       accounts = {
         {
           name = "work",
-          calendarIDs = { "test@example.com" },
-          authorizeAccount = "test@example.com"
+          authorizeAccount = "test@example.com",
+          calendarIDs = {
+            "test@example.com",
+          },
         },
         {
           name = "private",
-          calendarIDs = { "private@example.com" },
-          authorizeAccount = "private@example.com"
-        }
-      }
+          authorizeAccount = "private@example.com",
+          calendarIDs = {
+            "private@example.com",
+          },
+        },
+      },
     },
   },
   prompt = {
     calendarIDs = {
       "test@example.com",
+      "private@example.com",
     },
-  }
+  },
+  mcp = {
+    insertEvent = {
+      target = {
+        {
+          nickname = "work",
+          calendarID = "test@example.com",
+        },
+        {
+          nickname = "private",
+          calendarID = "private@example.com",
+        },
+      },
+    },
+    getEvents = {
+      calendarIDs = {
+        "test@example.com",
+        "private@example.com",
+      },
+    },
+  },
 }
 "#;
         fs::write(&config_file_path, config_code)?;
@@ -554,9 +825,32 @@ return M
             },
             prompt: Prompt {
                 template: crate::config::templates::google::STANDARD.to_string(),
-                calendar_ids: vec!["test@example.com".to_string()],
+                calendar_ids: vec![
+                    "test@example.com".to_string(),
+                    "private@example.com".to_string(),
+                ],
             },
             settings: Settings { oauth2_path, tz },
+            mcp: Mcp {
+                insert_event: InsertEvent {
+                    target: vec![
+                        Target {
+                            nickname: "work".to_string(),
+                            calendar_id: "test@example.com".to_string(),
+                        },
+                        Target {
+                            nickname: "private".to_string(),
+                            calendar_id: "private@example.com".to_string(),
+                        },
+                    ],
+                },
+                get_events: GetEvents {
+                    calendar_ids: vec![
+                        "test@example.com".to_string(),
+                        "private@example.com".to_string(),
+                    ],
+                },
+            },
         };
 
         assert_eq!(config, expected, "Config should match the expected struct");

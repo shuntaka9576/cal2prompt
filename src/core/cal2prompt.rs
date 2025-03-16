@@ -245,6 +245,28 @@ Please authorize with account [{}]: {}"#,
         handler.launch_mcp(&transport).await
     }
 
+    // MCPの設定からターゲットカレンダーを取得するメソッド
+    pub fn get_mcp_target_calendars(&self) -> Vec<(&str, &str)> {
+        self.config
+            .mcp
+            .insert_event
+            .target
+            .iter()
+            .map(|target| (target.nickname.as_str(), target.calendar_id.as_str()))
+            .collect()
+    }
+
+    // MCPの設定からイベント取得用のカレンダーIDを取得するメソッド
+    pub fn get_mcp_event_calendar_ids(&self) -> Vec<&str> {
+        self.config
+            .mcp
+            .get_events
+            .calendar_ids
+            .iter()
+            .map(|id| id.as_str())
+            .collect()
+    }
+
     pub async fn insert_event(
         &self,
         summary: &str,
