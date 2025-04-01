@@ -1,5 +1,13 @@
 # Changelog
 
+## [v0.3.2](https://github.com/shuntaka9576/cal2prompt/compare/v0.3.1...v0.3.2) - 2025-04-01
+- chore(deps): lock file maintenance by @renovate in https://github.com/shuntaka9576/cal2prompt/pull/23
+- chore(config): migrate renovate config by @renovate in https://github.com/shuntaka9576/cal2prompt/pull/25
+- fix(deps): update all non-major dependencies by @renovate in https://github.com/shuntaka9576/cal2prompt/pull/26
+- fix(deps): update all non-major dependencies by @renovate in https://github.com/shuntaka9576/cal2prompt/pull/28
+- fix(deps): update all non-major dependencies by @renovate in https://github.com/shuntaka9576/cal2prompt/pull/29
+- chore(deps): update rust crate tempfile to v3.19.1 by @renovate in https://github.com/shuntaka9576/cal2prompt/pull/30
+
 ## [v0.3.1](https://github.com/shuntaka9576/cal2prompt/compare/v0.3.0...v0.3.1) - 2025-03-02
 - fix: restructure MCP implementation with improved testing infrastructure by @shuntaka9576 in https://github.com/shuntaka9576/cal2prompt/pull/12
 - chore(deps): update codecov/codecov-action action to v5 by @renovate in https://github.com/shuntaka9576/cal2prompt/pull/17
