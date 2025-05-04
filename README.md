@@ -216,7 +216,7 @@ Please add the following configuration to `~/Library/Application\ Support/Claude
 |Variable Name|Required|Description|Default Value|
 |---|---|---|---|
 |`settings.TZ`|true| [IANA](https://en.wikipedia.org/wiki/List_of_tz_database_time_zones) time zone format. (e.g. `America/Los_Angeles` `Asia/Tokyo`) |`UTC`|
-|`settings.oauthFilePath`|false|Path where OAuth2.0 tokens are temporarily stored. Typically, users do not need to change this unless they have a custom setup.|`~/.local/share/cal2prompt/oauth`|
+|`settings.oauth2Path`|false|Path where OAuth2.0 tokens are temporarily stored. Typically, users do not need to change this unless they have a custom setup.|`~/.local/share/cal2prompt/oauth2/`|
 |`source.google.oauth2.clientID`|true|Your Google OAuth2 Client ID used for authenticating with the Google Calendar API.|*(No default; must be specified)*|
 |`source.google.oauth2.clientSecret`|true|Your Google OAuth2 Client Secret used for authenticating with the Google Calendar API.|*(No default; must be specified)*|
 |`source.google.oauth2.scopes`|false|Scopes to grant to Google OAuth 2.0 client. Please refer to [here](https://developers.google.com/calendar/api/auth) for the types of scopes.|[`https://www.googleapis.com/auth/calendar.events`]|
