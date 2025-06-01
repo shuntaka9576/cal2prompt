@@ -11,14 +11,12 @@ pub enum GoogleCalendarError {
 
 pub struct GoogleCalendarClient {
     client: Client,
-    access_token: String,
 }
 
 impl GoogleCalendarClient {
-    pub fn new<T: Into<String>>(token: T) -> Self {
+    pub fn new() -> Self {
         GoogleCalendarClient {
             client: Client::new(),
-            access_token: token.into(),
         }
     }
 
@@ -27,6 +25,7 @@ impl GoogleCalendarClient {
         calendar_id: &str,
         since: &str,
         until: &str,
+        token: &str,
     ) -> anyhow::Result<CalendarEventsResponse> {
         let url = format!(
             "https://www.googleapis.com/calendar/v3/calendars/{}/events",
@@ -36,7 +35,7 @@ impl GoogleCalendarClient {
         let response = self
             .client
             .get(&url)
-            .bearer_auth(self.access_token.clone())
+            .bearer_auth(token)
             .query(&[
                 ("timeMin", since),
                 ("timeMax", until),
@@ -54,6 +53,7 @@ impl GoogleCalendarClient {
 
     pub async fn create_calendar_event(
         &self,
+        token: &str,
         calendar_id: &str,
         new_event: &InsertEventRequest,
     ) -> anyhow::Result<CreatedEventResponse> {
@@ -65,7 +65,7 @@ impl GoogleCalendarClient {
         let response = self
             .client
             .post(&url)
-            .bearer_auth(&self.access_token)
+            .bearer_auth(token)
             .json(new_event)
             .send()
             .await?
