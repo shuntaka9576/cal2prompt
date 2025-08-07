@@ -29,121 +29,8 @@ impl<'a> McpHandler<'a> {
                 Ok(Message::Request {
                     id, method, params, ..
                 }) => {
-                    eprintln!(
-                        "[SERVER] Got Request: id={}, method={}, params={:?}",
-                        id, method, params
-                    );
-
-                    // Handle initialization request first
-                    if method == "initialize" {
-                        if let Err(err) = self.handle_initialize(transport, id).await {
-                            eprintln!("[SERVER] Error handling initialize: {:?}", err);
-                            self.send_error_response(
-                                transport,
-                                id,
-                                JsonRpcErrorCode::InternalError,
-                                format!("Failed to initialize: {}", err),
-                            )
-                            .await?;
-                        }
-                        self.initialized = true;
-                        continue;
-                    }
-
-                    // For all other requests, ensure we're initialized
-                    if !self.initialized {
-                        self.send_error_response(
-                            transport,
-                            id,
-                            JsonRpcErrorCode::InvalidRequest,
-                            "Server not initialized. Send 'initialize' request first.".to_string(),
-                        )
+                    self.handle_request_message(transport, id, method, params)
                         .await?;
-                        continue;
-                    }
-
-                    // Allow tools/list without requiring OAuth
-                    if method == "tools/list" {
-                        if let Err(err) = self.handle_tools_list(transport, id).await {
-                            eprintln!("[SERVER] Error handling tools/list: {:?}", err);
-                            self.send_error_response(
-                                transport,
-                                id,
-                                JsonRpcErrorCode::InternalError,
-                                format!("Failed to list tools: {}", err),
-                            )
-                            .await?;
-                        }
-                        continue;
-                    }
-
-                    // For tools/call and other methods that require authentication
-                    if method == "tools/call" {
-                        // Perform OAuth if not done yet
-                        if self.cal2prompt.token.is_none() {
-                            if let Err(err) = self.cal2prompt.oauth().await {
-                                // Check for OAuth2PortInUse error using proper type checking
-                                if let Some(Cal2PromptError::OAuth2PortInUse(_)) =
-                                    err.downcast_ref::<Cal2PromptError>()
-                                {
-                                    self.send_error_response(
-                                        transport,
-                                        id,
-                                        JsonRpcErrorCode::PortInUse,
-                                        "Port 9004 is already in use. Another instance of cal2prompt or Windsurf may be running.".to_string(),
-                                    )
-                                    .await?;
-                                    continue;
-                                }
-
-                                self.send_error_response(
-                                    transport,
-                                    id,
-                                    JsonRpcErrorCode::InternalError,
-                                    format!("Failed to authenticate: {}", err),
-                                )
-                                .await?;
-                                continue;
-                            }
-                        }
-
-                        // Ensure token is valid for all requests that need authentication
-                        if let Err(err) = self.cal2prompt.ensure_valid_token().await {
-                            // Check for OAuth2PortInUse error using proper type checking
-                            if let Some(Cal2PromptError::OAuth2PortInUse(_)) =
-                                err.downcast_ref::<Cal2PromptError>()
-                            {
-                                self.send_error_response(
-                                    transport,
-                                    id,
-                                    JsonRpcErrorCode::PortInUse,
-                                    "Port 9004 is already in use. Another instance of cal2prompt or Windsurf may be running.".to_string(),
-                                )
-                                .await?;
-                                continue;
-                            }
-
-                            self.send_error_response(
-                                transport,
-                                id,
-                                JsonRpcErrorCode::InternalError,
-                                format!("Failed to refresh token: {}", err),
-                            )
-                            .await?;
-                            continue;
-                        }
-                    }
-
-                    if let Err(err) = self.handle_request(transport, id, method, params).await {
-                        eprintln!("[SERVER] Error handling request: {:?}", err);
-                        self.send_error_response(
-                            transport,
-                            id,
-                            JsonRpcErrorCode::InternalError,
-                            format!("Failed to handle request: {}", err),
-                        )
-                        .await?;
-                    }
                 }
                 Ok(Message::Notification { method, params, .. }) => {
                     eprintln!(
@@ -165,6 +52,193 @@ impl<'a> McpHandler<'a> {
             }
         }
 
+        Ok(())
+    }
+
+    async fn handle_request_message(
+        &mut self,
+        transport: &StdioTransport,
+        id: u64,
+        method: String,
+        params: Option<serde_json::Value>,
+    ) -> anyhow::Result<()> {
+        eprintln!(
+            "[SERVER] Got Request: id={}, method={}, params={:?}",
+            id, method, params
+        );
+
+        if method == "initialize" {
+            return self.handle_initialize_request(transport, id).await;
+        }
+
+        if !self.initialized {
+            return self
+                .send_error_response(
+                    transport,
+                    id,
+                    JsonRpcErrorCode::InvalidRequest,
+                    "Server not initialized. Send 'initialize' request first.".to_string(),
+                )
+                .await;
+        }
+
+        match method.as_str() {
+            "tools/list" => self.handle_tools_list_request(transport, id).await,
+            "tools/call" => self.handle_tools_call_request(transport, id, params).await,
+            _ => {
+                self.handle_generic_request(transport, id, method, params)
+                    .await
+            }
+        }
+    }
+
+    async fn handle_initialize_request(
+        &mut self,
+        transport: &StdioTransport,
+        id: u64,
+    ) -> anyhow::Result<()> {
+        if let Err(err) = self.handle_initialize(transport, id).await {
+            eprintln!("[SERVER] Error handling initialize: {:?}", err);
+            return self
+                .send_error_response(
+                    transport,
+                    id,
+                    JsonRpcErrorCode::InternalError,
+                    format!("Failed to initialize: {}", err),
+                )
+                .await;
+        }
+        self.initialized = true;
+        Ok(())
+    }
+
+    async fn handle_tools_list_request(
+        &self,
+        transport: &StdioTransport,
+        id: u64,
+    ) -> anyhow::Result<()> {
+        if let Err(err) = self.handle_tools_list(transport, id).await {
+            eprintln!("[SERVER] Error handling tools/list: {:?}", err);
+            return self
+                .send_error_response(
+                    transport,
+                    id,
+                    JsonRpcErrorCode::InternalError,
+                    format!("Failed to list tools: {}", err),
+                )
+                .await;
+        }
+        Ok(())
+    }
+
+    async fn handle_tools_call_request(
+        &mut self,
+        transport: &StdioTransport,
+        id: u64,
+        params: Option<serde_json::Value>,
+    ) -> anyhow::Result<()> {
+        let account: Option<String> = params
+            .as_ref()
+            .and_then(|p| p.pointer("/arguments/profile"))
+            .and_then(|v| v.as_str())
+            .map(ToString::to_string);
+
+        if let Err(err) = self.ensure_authentication(transport, id, account).await {
+            return err;
+        }
+
+        if let Some(params_val) = params {
+            self.handle_tools_call(transport, id, params_val).await?;
+        }
+        Ok(())
+    }
+
+    async fn ensure_authentication(
+        &mut self,
+        transport: &StdioTransport,
+        id: u64,
+        account: Option<String>,
+    ) -> Result<(), anyhow::Result<()>> {
+        let account_name = match &account {
+            Some(p) => p.clone(),
+            None => self.cal2prompt.accounts.keys().next().unwrap().clone(),
+        };
+
+        if self
+            .cal2prompt
+            .accounts
+            .get(&account_name)
+            .unwrap()
+            .token
+            .is_none()
+        {
+            if let Err(err) = self.cal2prompt.oauth(account.clone()).await {
+                if let Some(Cal2PromptError::OAuth2PortInUse(_)) =
+                    err.downcast_ref::<Cal2PromptError>()
+                {
+                    return Err(self.send_error_response(
+                        transport,
+                        id,
+                        JsonRpcErrorCode::PortInUse,
+                        "Port 9004 is already in use. Another instance of cal2prompt or Windsurf may be running.".to_string(),
+                    )
+                    .await);
+                }
+
+                return Err(self
+                    .send_error_response(
+                        transport,
+                        id,
+                        JsonRpcErrorCode::InternalError,
+                        format!("Failed to authenticate: {}", err),
+                    )
+                    .await);
+            }
+        }
+
+        if let Err(err) = self.cal2prompt.ensure_valid_token(account.clone()).await {
+            if let Some(Cal2PromptError::OAuth2PortInUse(_)) = err.downcast_ref::<Cal2PromptError>()
+            {
+                return Err(self.send_error_response(
+                    transport,
+                    id,
+                    JsonRpcErrorCode::PortInUse,
+                    "Port 9004 is already in use. Another instance of cal2prompt or Windsurf may be running.".to_string(),
+                )
+                .await);
+            }
+
+            return Err(self
+                .send_error_response(
+                    transport,
+                    id,
+                    JsonRpcErrorCode::InternalError,
+                    format!("Failed to refresh token: {}", err),
+                )
+                .await);
+        }
+
+        Ok(())
+    }
+
+    async fn handle_generic_request(
+        &self,
+        transport: &StdioTransport,
+        id: u64,
+        method: String,
+        params: Option<serde_json::Value>,
+    ) -> anyhow::Result<()> {
+        if let Err(err) = self.handle_request(transport, id, method, params).await {
+            eprintln!("[SERVER] Error handling request: {:?}", err);
+            return self
+                .send_error_response(
+                    transport,
+                    id,
+                    JsonRpcErrorCode::InternalError,
+                    format!("Failed to handle request: {}", err),
+                )
+                .await;
+        }
         Ok(())
     }
 
@@ -202,7 +276,7 @@ impl<'a> McpHandler<'a> {
                 "protocolVersion": "2024-11-05",
                 "serverInfo": {
                     "name": "cal2prompt",
-                    "version": "0.1.0"
+                    "version": "0.1.0" // FIXME: get version from Cargo.toml
                 }
             })),
             error: None,
@@ -260,27 +334,37 @@ impl<'a> McpHandler<'a> {
     ) -> anyhow::Result<()> {
         let since_str = params_val
             .pointer("/arguments/since")
-            .and_then(Value::as_str)
-            .unwrap_or("");
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| anyhow::anyhow!("Missing 'since' parameter"))?;
+
         let until_str = params_val
             .pointer("/arguments/until")
-            .and_then(Value::as_str)
-            .unwrap_or("");
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| anyhow::anyhow!("Missing 'until' parameter"))?;
 
-        match self.cal2prompt.fetch_days(since_str, until_str).await {
+        let account = params_val
+            .pointer("/arguments/profile")
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string());
+
+        match self
+            .cal2prompt
+            .fetch_days(since_str, until_str, account.map(|p| p.to_string()))
+            .await
+        {
             Ok(days) => {
-                let result_json = json!({ "days": days });
-                let obj_as_str = serde_json::to_string(&result_json)?;
-                self.send_text_response(transport, id, &obj_as_str).await?;
+                let result = self.cal2prompt.render_days(days)?;
+                self.send_text_response(transport, id, &result).await?;
             }
-            Err(err) => {
-                self.send_error_response(
-                    transport,
-                    id,
-                    JsonRpcErrorCode::InternalError,
-                    format!("Failed to fetch calendar events: {}", err),
-                )
-                .await?;
+            Err(e) => {
+                return self
+                    .send_error_response(
+                        transport,
+                        id,
+                        JsonRpcErrorCode::InternalError,
+                        format!("Failed to fetch calendar events: {}", e),
+                    )
+                    .await;
             }
         }
 
@@ -295,44 +379,72 @@ impl<'a> McpHandler<'a> {
     ) -> anyhow::Result<()> {
         let summary_str = params_val
             .pointer("/arguments/summary")
-            .and_then(Value::as_str)
-            .unwrap_or("");
-        let description_str: Option<String> = params_val
-            .pointer("/arguments/description")
-            .and_then(Value::as_str)
-            .map(String::from);
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| anyhow::anyhow!("Missing 'summary' parameter"))?;
+
         let start_str = params_val
             .pointer("/arguments/start")
-            .and_then(Value::as_str)
-            .unwrap_or("");
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| anyhow::anyhow!("Missing 'start' parameter"))?;
+
         let end_str = params_val
             .pointer("/arguments/end")
-            .and_then(Value::as_str)
-            .unwrap_or("");
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| anyhow::anyhow!("Missing 'end' parameter"))?;
+
+        let description_str = params_val
+            .pointer("/arguments/description")
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string());
+
+        let account: Option<String> = params_val
+            .pointer("/arguments/profile")
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string());
 
         match self
             .cal2prompt
-            .insert_event(summary_str, description_str, start_str, end_str)
+            .insert_event(summary_str, description_str, start_str, end_str, account)
             .await
         {
-            Ok(res) => {
-                let obj_as_str = serde_json::to_string(&res)?;
-                self.send_text_response(transport, id, &obj_as_str).await?;
+            Ok(response) => {
+                let result = format!(
+                    "Event created successfully!\nLink: {}",
+                    response
+                        .html_link
+                        .unwrap_or_else(|| "No link available".to_string())
+                );
+                self.send_text_response(transport, id, &result).await?;
             }
-            Err(err) => {
-                let (code, message) = match err.downcast_ref::<CalendarServiceError>() {
-                    Some(CalendarServiceError::NoCalendarId) => {
-                        (JsonRpcErrorCode::InvalidParams, err.to_string())
-                    }
-                    None => (
-                        JsonRpcErrorCode::InternalError,
-                        format!("Unexpected error: {}", err),
-                    ),
-                };
-
-                self.send_error_response(transport, id, code, message)
+            Err(e) => match e.downcast::<CalendarServiceError>() {
+                Ok(CalendarServiceError::AccountNotFound(account)) => {
+                    self.send_error_response(
+                        transport,
+                        id,
+                        JsonRpcErrorCode::AccountNotFound,
+                        format!("Account '{}' not found", account),
+                    )
                     .await?;
-            }
+                }
+                Ok(CalendarServiceError::NoCalendarId) => {
+                    self.send_error_response(
+                        transport,
+                        id,
+                        JsonRpcErrorCode::InvalidParams,
+                        "No calendar ID configured".to_string(),
+                    )
+                    .await?;
+                }
+                Err(e) => {
+                    self.send_error_response(
+                        transport,
+                        id,
+                        JsonRpcErrorCode::InternalError,
+                        format!("Unexpected error: {}", e),
+                    )
+                    .await?;
+                }
+            },
         }
 
         Ok(())

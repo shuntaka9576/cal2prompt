@@ -67,8 +67,7 @@ enum Commands {
     Mcp,
 }
 
-#[tokio::main]
-async fn main() {
+fn main() {
     let cli = Cli::parse();
 
     if cli.version {
@@ -79,71 +78,93 @@ async fn main() {
     match &cli.command {
         Some(cmd) => match cmd {
             Commands::Mcp => {
-                // For MCP mode, initialize without OAuth to allow proper error handling via JSON-RPC
-                match init_cal2prompt_without_oauth().await {
-                    Ok(mut cal2prompt) => {
-                        if let Err(err) = cal2prompt.launch_mcp().await {
-                            eprintln!("Error: {:?}", err);
+                let rt = tokio::runtime::Runtime::new().unwrap();
+                rt.block_on(async {
+                    match init_cal2prompt_mcp().await {
+                        Ok(mut cal2prompt) => {
+                            if let Err(err) = cal2prompt.launch_mcp().await {
+                                eprintln!("Error: {:?}", err);
+                                std::process::exit(1);
+                            }
+                        }
+                        Err(e) => {
+                            eprintln!("{}", e);
                             std::process::exit(1);
                         }
                     }
+                });
+            }
+        },
+        None => {
+            let rt = tokio::runtime::Runtime::new().unwrap();
+            rt.block_on(async {
+                let cal2prompt = match init_cal2prompt_cli().await {
+                    Ok(cal2prompt) => cal2prompt,
                     Err(e) => {
                         eprintln!("{}", e);
                         std::process::exit(1);
                     }
-                }
-            }
-        },
-        None => {
-            // For CLI mode, initialize with OAuth as before
-            let cal2prompt = match init_cal2prompt().await {
-                Ok(cal2prompt) => cal2prompt,
-                Err(e) => {
-                    eprintln!("{}", e);
-                    std::process::exit(1);
-                }
-            };
+                };
 
-            let fetch_mode = determine_duration_or_range(&cli);
+                let fetch_mode = determine_duration_or_range(&cli);
+                // TODO: accounts loop request
+                let calendar_ids = cal2prompt.config.prompt.calendar_ids.clone();
 
-            match fetch_mode {
-                FetchMode::Shortcut(duration) => {
-                    match cal2prompt.get_events_short_cut(duration).await {
-                        Ok(generate) => {
-                            println!("{}", generate);
+                match fetch_mode {
+                    FetchMode::Shortcut(duration) => {
+                        match cal2prompt.fetch_duration(duration).await {
+                            Ok(output) => {
+                                println!("{}", output);
+                            }
+                            Err(e) => {
+                                eprintln!("{}", e);
+                                std::process::exit(1);
+                            }
                         }
-                        Err(err) => {
-                            eprint!("{:?}", err);
+                    }
+                    FetchMode::Range(since, until) => {
+                        match cal2prompt.fetch_days(&since, &until, None).await {
+                            Ok(days) => match cal2prompt.render_days(days) {
+                                Ok(output) => {
+                                    println!("{}", output);
+                                }
+                                Err(e) => {
+                                    eprintln!("{}", e);
+                                    std::process::exit(1);
+                                }
+                            },
+                            Err(e) => {
+                                eprintln!("{}", e);
+                                std::process::exit(1);
+                            }
                         }
                     }
                 }
-                FetchMode::Range(since, until) => {
-                    match cal2prompt.get_events_duration(since, until).await {
-                        Ok(generate) => {
-                            println!("{}", generate);
-                        }
-                        Err(err) => {
-                            eprint!("{:?}", err);
-                        }
-                    }
-                }
-            }
+            });
         }
-    };
+    }
 }
 
-async fn init_cal2prompt() -> anyhow::Result<Cal2Prompt> {
+async fn init_cal2prompt_cli() -> anyhow::Result<Cal2Prompt> {
     let mut cal2prompt = Cal2Prompt::new()?;
-    let _ = cal2prompt.oauth().await.map_err(|e| {
-        eprintln!("{}", e);
-        std::process::exit(1);
-    });
+
+    let accounts = cal2prompt
+        .get_accounts()?
+        .into_iter()
+        .map(|account| account.account_name)
+        .collect::<Vec<String>>();
+
+    for name in accounts {
+        if let Err(e) = cal2prompt.oauth(Some(name)).await {
+            eprintln!("{}", e);
+            std::process::exit(1);
+        }
+    }
 
     Ok(cal2prompt)
 }
 
-async fn init_cal2prompt_without_oauth() -> anyhow::Result<Cal2Prompt> {
-    // Initialize Cal2Prompt without performing OAuth
+async fn init_cal2prompt_mcp() -> anyhow::Result<Cal2Prompt> {
     Cal2Prompt::new()
 }
 

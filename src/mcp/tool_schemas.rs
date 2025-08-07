@@ -1,0 +1,191 @@
+use serde_json::{json, Value};
+
+pub fn generate_list_calendar_events_tool() -> Value {
+    json!({
+        "name": "list_calendar_events",
+        "description": "Retrieves events from Google Calendar within the specified time range. Format: yyyy-MM-dd or yyyy-MM-dd HH:mm. (Currently we only parse yyyy-MM-dd).",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "since": {
+                    "type": "string",
+                    "description": "Start date/time for retrieval (e.g. 2025-01-01)",
+                    "format": "YYYY-MM-DD"
+                },
+                "until": {
+                    "type": "string",
+                    "description": "End date/time for retrieval (e.g. 2025-01-05)",
+                    "format": "YYYY-MM-DD"
+                }
+            },
+            "required": ["since", "until"]
+        },
+        "outputSchema": {
+            "type": "object",
+            "properties": {
+                "days": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "date": {
+                                "type": "string",
+                                "description": "The date (e.g. 2025-01-01)"
+                            },
+                            "all_day_events": {
+                                "type": "array",
+                                "description": "List of all-day events",
+                                "items": {
+                                    "type": "object",
+                                    "properties": {
+                                        "summary": {
+                                            "type": "string",
+                                            "description": "Event summary"
+                                        },
+                                        "location": {
+                                            "type": "string",
+                                            "description": "Location",
+                                            "nullable": true
+                                        },
+                                        "description": {
+                                            "type": "string",
+                                            "description": "Event description",
+                                            "nullable": true
+                                        },
+                                        "attendees": {
+                                            "type": "array",
+                                            "items": {
+                                                "type": "string"
+                                            },
+                                            "description": "List of attendees"
+                                        }
+                                    },
+                                    "required": ["summary", "attendees"]
+                                }
+                            },
+                            "timed_events": {
+                                "type": "array",
+                                "description": "List of events with specific times",
+                                "items": {
+                                    "type": "object",
+                                    "properties": {
+                                        "summary": {
+                                            "type": "string",
+                                            "description": "Event summary"
+                                        },
+                                        "start": {
+                                            "type": "string",
+                                            "description": "Start date/time (e.g. 2025-01-01 10:00)",
+                                            "format": "yyyy-MM-dd HH:mm"
+                                        },
+                                        "end": {
+                                            "type": "string",
+                                            "description": "End date/time (e.g. 2025-01-01 11:00)",
+                                            "format": "yyyy-MM-dd HH:mm"
+                                        },
+                                        "location": {
+                                            "type": "string",
+                                            "description": "Location",
+                                            "nullable": true
+                                        },
+                                        "description": {
+                                            "type": "string",
+                                            "description": "Event description",
+                                            "nullable": true
+                                        },
+                                        "attendees": {
+                                            "type": "array",
+                                            "items": {
+                                                "type": "string"
+                                            },
+                                            "description": "List of attendees"
+                                        }
+                                    },
+                                    "required": ["summary", "start", "end", "attendees"]
+                                }
+                            }
+                        },
+                        "required": ["date", "all_day_events", "timed_events"]
+                    }
+                }
+            },
+            "required": ["days"]
+        }
+    })
+}
+
+pub fn generate_insert_calendar_event_tool() -> Value {
+    json!({
+        "name": "insert_calendar_event",
+        "description": "Insert a new event in Google Calendar with the specified details.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "summary": {
+                    "type": "string",
+                    "description": "Event summary or title"
+                },
+                "start": {
+                    "type": "string",
+                    "description": "Start date/time (e.g. 2025-01-01 10:00)",
+                    "format": "yyyy-MM-dd HH:mm"
+                },
+                "end": {
+                    "type": "string",
+                    "description": "End date/time (e.g. 2025-01-01 11:00)",
+                    "format": "yyyy-MM-dd HH:mm"
+                },
+                "allDay": {
+                    "type": "boolean",
+                    "description": "True if the event is an all-day event"
+                },
+                "location": {
+                    "type": "string",
+                    "description": "Event location",
+                    "nullable": true
+                },
+                "description": {
+                    "type": "string",
+                    "description": "Event description",
+                    "nullable": true
+                },
+                "attendees": {
+                    "type": "array",
+                    "items": {
+                        "type": "string",
+                        "description": "An attendee's email address"
+                    },
+                    "description": "A list of email addresses for attendees"
+                }
+            },
+            "required": ["summary", "start", "end"]
+        },
+        "outputSchema": {
+            "type": "object",
+            "properties": {
+                "id": {
+                    "type": "string",
+                    "description": "The unique identifier of the newly created event"
+                },
+                "htmlLink": {
+                    "type": "string",
+                    "description": "A link to the event in Google Calendar"
+                }
+            },
+            "required": ["id", "htmlLink"]
+        }
+    })
+}
+
+pub fn generate_calendar_tools() -> Value {
+    json!({
+        "tools": [
+            generate_list_calendar_events_tool(),
+            generate_insert_calendar_event_tool()
+        ]
+    })
+}
+
+pub fn get_calendar_tools_json() -> String {
+    serde_json::to_string_pretty(&generate_calendar_tools()).unwrap()
+}
