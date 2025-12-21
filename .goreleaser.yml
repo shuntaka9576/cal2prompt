@@ -1,5 +1,8 @@
 version: 2
 
+release:
+  use_existing_draft: true
+
 before:
   hooks:
     - rustup default stable
