@@ -1,5 +1,8 @@
 # Changelog
 
+## [v0.3.3](https://github.com/shuntaka9576/cal2prompt/compare/v0.3.2...v0.3.3) - 2025-12-21
+- chore: disable renovate automerge and dependency dashboard by @shuntaka9576 in https://github.com/shuntaka9576/cal2prompt/pull/38
+
 ## [v0.3.2](https://github.com/shuntaka9576/cal2prompt/compare/v0.3.1...v0.3.2) - 2025-12-21
 - chore(deps): lock file maintenance by @renovate[bot] in https://github.com/shuntaka9576/cal2prompt/pull/23
 - chore(config): migrate renovate config by @renovate[bot] in https://github.com/shuntaka9576/cal2prompt/pull/25
